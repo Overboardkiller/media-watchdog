@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 200 200">
+  <defs>
+    <linearGradient id="gradient" gradientTransform="rotate(45 0.5 0.5)">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#211c36"/>
+    </linearGradient>
+    <clipPath id="rounded">
+      <rect width="200" height="200" rx="36" ry="36"/>
+    </clipPath>
+  </defs>
+  <rect width="200" height="200" fill="url('#gradient')" rx="36" ry="36"/>
+  <g clip-path="url(#rounded)">
+    <g fill="#d7d421" transform="matrix(7.969979152189021,0,0,7.969979152189021,42.29613848012963,142.11954188078457)" stroke="#a8dc9f" stroke-width="0">
+      <path d="M8.39-10.57L10.05-4.34L11.11-10.57L14.27-10.57L11.78 0L8.99 0L7.25-6.27L5.49 0L2.71 0L0.21-10.57L3.37-10.57L4.41-4.19L6.09-10.57L8.39-10.57Z"/>
+    </g>
+  </g>
+</svg>
