@@ -1,0 +1,17 @@
+services:
+  media-watchdog:
+    image: overboardkiller/media-watchdog:latest
+    container_name: media-watchdog
+    restart: unless-stopped
+    networks:
+      bond0:
+        ipv4_address: 192.168.1.225
+    ports:
+      - "5000:5000"
+    volumes:
+      - /mnt/user/appdata/media-watchdog/data:/data
+      - /mnt/user/appdata/EmbyServer:/emby-appdata:ro
+
+networks:
+  bond0:
+    external: true

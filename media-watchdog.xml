@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>media-watchdog</Name>
+  <Repository>overboardkiller/media-watchdog</Repository>
+  <Registry>https://hub.docker.com/r/overboardkiller/media-watchdog</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/overboardkiller/media-watchdog/issues</Support>
+  <Project>https://github.com/overboardkiller/media-watchdog</Project>
+  <Overview>Media Watchdog cross-references your Overseerr (Jellyseerr) requests with your Emby watch history so you can see what has and hasn't been watched, flag items for deletion, and manage your media library.</Overview>
+  <Category>MediaApp:Video MediaApp:Other Tools:</Category>
+  <WebUI>http://[IP]:[PORT:5000]</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/overboardkiller/unraid-templates/main/media-watchdog.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/overboardkiller/unraid-templates/main/icons/media-watchdog.svg</Icon>
+  <ExtraParams>--restart unless-stopped</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>Emby Server, Overseerr or Jellyseerr</Requires>
+
+  <Config Name="WebUI Port" Target="5000" Default="5000" Mode="tcp" Description="Port for the Media Watchdog web interface." Type="Port" Display="always" Required="true" Mask="false">5000</Config>
+
+  <Config Name="Data Directory" Target="/data" Default="/mnt/user/appdata/media-watchdog/data" Mode="rw" Description="Persistent storage for Watchdog database and logs." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/media-watchdog/data</Config>
+
+  <Config Name="Emby AppData" Target="/emby-appdata" Default="/mnt/user/appdata/EmbyServer" Mode="ro" Description="Read-only path to your Emby Server appdata directory. Used to read watch history directly." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/EmbyServer</Config>
+
+</Container>
