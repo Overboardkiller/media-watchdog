@@ -120,8 +120,10 @@ def load_lockouts():
 
 def save_lockouts(data):
     os.makedirs(os.path.dirname(LOCKOUT_FILE), exist_ok=True)
-    with open(LOCKOUT_FILE, 'w') as f:
+    tmp = LOCKOUT_FILE + '.tmp'
+    with open(tmp, 'w') as f:
         json.dump(data, f)
+    os.replace(tmp, LOCKOUT_FILE)
 
 def get_client_ip():
     xff = request.headers.get('X-Forwarded-For', '')
@@ -208,8 +210,10 @@ def load_data():
 
 def save_data(data):
     os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-    with open(DATA_FILE, 'w') as f:
+    tmp = DATA_FILE + '.tmp'
+    with open(tmp, 'w') as f:
         json.dump(data, f, indent=2)
+    os.replace(tmp, DATA_FILE)  # atomic on Linux — no partial writes
 
 # ── Session helpers ───────────────────────────────────────────────────────────
 def load_sessions():
@@ -223,8 +227,10 @@ def load_sessions():
 
 def save_sessions(sessions):
     os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
-    with open(SESSION_FILE, 'w') as f:
+    tmp = SESSION_FILE + '.tmp'
+    with open(tmp, 'w') as f:
         json.dump(sessions, f)
+    os.replace(tmp, SESSION_FILE)
 
 def make_token():
     return secrets.token_hex(32)
