@@ -1,0 +1,7 @@
+data/
+deploy.sh
+docker-compose.yml
+*.tar.gz
+*.md
+.git
+index.html

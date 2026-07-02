@@ -228,7 +228,27 @@ async function loadReport() {
     currentUser = {username:data.username, is_admin:data.is_admin};
     allRows = data.results;
     libraries = data.libraries || [];
-    seerrServices = data.seerr_services || [];
+    // Always derive seerrServices from arr_instances (source of truth for order/names)
+    // Enrich with has_arr_key from seerr_services
+    const svcKeyMap = {};
+    (data.seerr_services || []).forEach(s => { svcKeyMap[s.seerr_service_id] = s.has_arr_key; });
+    if (data.arr_instances && data.arr_instances.length) {
+      seerrServices = data.arr_instances.map(inst => {
+        const sid = inst.seerr_service_id;
+        // Find matching seerr_service for url/type/name
+        const svc = (data.seerr_services || []).find(s => s.seerr_service_id === sid) || {};
+        return {
+          seerr_service_id: sid,
+          name:             inst.name || svc.name || '',
+          custom_name:      inst.custom_name || '',
+          type:             inst.type || svc.type || '',
+          url:              svc.url || '',
+          has_arr_key:      svcKeyMap[sid] || false
+        };
+      });
+    } else {
+      seerrServices = data.seerr_services || [];
+    }
     updateUserPill();
     renderLibTabs();
     renderViewingSelector(data);
@@ -631,7 +651,7 @@ function cardHtml(r, isAdmin) {
   return `<div class="bg-zinc-900 border ${rowClass} rounded-2xl p-4 flex flex-col gap-3">
     <div class="flex items-start justify-between gap-3">
       <div class="min-w-0">
-        <a href="${r.overseerr_link}" target="_blank" class="font-medium hover:text-yellow-400 transition-colors block">${esc(r.title)}</a>
+        <a href="${r.overseerr_link}" target="_blank" class="font-medium hover:text-yellow-400 transition-colors block">${r.title === 'Unknown' ? `<span class="text-zinc-500 italic">Orphaned <span class="text-zinc-600 text-xs">(TMDB: ${r.tmdb_id||'?'})</span></span>` : esc(r.title)}</a>
         <div class="text-xs text-zinc-500 mt-0.5">${r.year||''} · ${r.type} · ${scorePillText(r.score)}</div>
       </div>
       ${statusBadge(r.status)}
@@ -688,7 +708,7 @@ function rowHtml(r, isAdmin, showLastWatched=true, showWatchProgress=true) {
   const rowClass = r.protected ? 'table-row protected-row' : r.flagged ? 'table-row flagged-row' : 'table-row';
   return `<tr class="${rowClass}">
     <td class="pl-8 py-5">
-      <a href="${r.overseerr_link}" target="_blank" class="font-medium hover:text-yellow-400 transition-colors">${esc(r.title)}</a>
+      <a href="${r.overseerr_link}" target="_blank" class="font-medium hover:text-yellow-400 transition-colors">${r.title === 'Unknown' ? `<span class="text-zinc-500 italic">Orphaned <span class="text-zinc-600 text-xs">(TMDB: ${r.tmdb_id||'?'})</span></span>` : esc(r.title)}</a>
       ${r.year?`<div class="text-xs text-zinc-500 mt-0.5">${r.year}</div>`:''}
     </td>
     <td class="py-5 text-zinc-400 text-sm whitespace-nowrap">${getServiceLabel(r)}</td>
@@ -758,6 +778,11 @@ async function doDelete(reqId) {
   if (!row) return;
 
   // Show confirmation modal with what will happen
+  const arrType = row.type === 'Movie' ? 'radarr' : 'sonarr';
+  const svc = seerrServices.find(s => s.seerr_service_id === row.service_id) ||
+              seerrServices.find(s => s.type === arrType && s.seerr_service_id.endsWith(':0'));
+  const hasKey = svc && svc.has_arr_key;
+
   showModal(`
     <h2 class="text-base font-semibold logo-font mb-3 text-red-400">⚠ Confirm Deletion</h2>
     <div class="bg-zinc-800 rounded-xl p-4 mb-4">
@@ -765,10 +790,16 @@ async function doDelete(reqId) {
       <p class="text-xs text-zinc-500 mt-1">${row.type} · Requested by ${esc(row.requested_by)}</p>
       ${row.flag_note ? `<p class="text-xs text-zinc-400 mt-2 italic">"${esc(row.flag_note)}"</p>` : ''}
     </div>
-    <div class="bg-zinc-900 rounded-xl p-3 mb-4 text-xs text-zinc-400 space-y-1">
-      <p>✓ Remove from Radarr/Sonarr <span class="text-zinc-600">(files deleted from disk)</span></p>
-      <p>✓ Remove request from Seerr</p>
-      <p>✓ Emby will clean up on next library scan</p>
+    <div class="bg-zinc-900 rounded-xl p-3 mb-4 text-xs space-y-1">
+      ${hasKey
+        ? '<p class="text-zinc-400">✓ Remove from Radarr/Sonarr <span class="text-zinc-600">(files deleted from disk)</span></p>'
+        : '<p class="text-amber-400">✗ No Arr API key set — item will remain monitored in Radarr/Sonarr and files will NOT be deleted from disk</p>'
+      }
+      <p class="text-zinc-400">✓ Remove request from Seerr</p>
+      ${hasKey
+        ? '<p class="text-zinc-400">✓ Emby will clean up on next library scan</p>'
+        : '<p class="text-amber-400">✗ Files not deleted — Emby library unchanged</p>'
+      }
     </div>
     <p class="text-xs text-red-400 mb-4 font-medium">This cannot be undone.</p>
     <div class="flex gap-3 justify-end">
@@ -895,7 +926,7 @@ This cannot be undone.`)) return;
         <button onclick="closeModal()" class="px-5 py-2 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors text-sm">Done</button>
       </div>`);
     if (row) row.season_flags = [];
-    updateFlagBadge(); applyFilters(); setStatus('');
+    await loadReport(); setStatus('');
   } catch(e) { setStatus('Error: '+e.message); }
 }
 
@@ -964,68 +995,157 @@ async function forceRefresh() {
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-async function showSettings() {
+async function showSettings(tab='general') {
   const cfg = await api('GET','/api/config');
   const arrData = await api('GET','/api/config/arr');
   window._arrInstances = arrData.arr_instances || [];
-  renderSettingsModal(cfg);
+  renderSettingsModal(cfg, tab);
 }
 
-function renderSettingsModal(cfg) {
+function renderSettingsModal(cfg, activeTab='general') {
   const i = cfg.cache_interval_hours||24;
-  const arrRows = window._arrInstances.map((inst,idx) => `
+
+  // Build arr rows for Arr Stack tab
+  const arrRows = (window._arrInstances || []).map((inst,idx) => `
     <div class="bg-zinc-800 rounded-xl p-3 mb-2 arr-draggable" id="arr_row_${idx}" draggable="true" data-idx="${idx}">
       <div class="flex items-center gap-2 mb-2">
         <span class="text-xs text-zinc-500 w-16 flex-shrink-0">${inst.type==='radarr'?'🎬 Radarr':'📺 Sonarr'}</span>
-        <span class="text-xs text-zinc-400 flex-1">${esc(inst.name||'')}</span>
-        <span class="text-xs text-zinc-600">${esc(inst.url||'')}</span>
+        <span class="text-xs text-zinc-400 flex-1 font-medium">${esc(inst.name||'')}</span>
       </div>
-      <div class="flex items-center gap-2">
-        <input placeholder="Custom tab name (optional)" value="${esc(inst.custom_name||'')}" class="flex-1 bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs rounded-lg px-2 py-1.5" oninput="updateArr(${idx},'custom_name',this.value)" title="Override the tab label shown in the UI"/>
-        <input type="password" placeholder="${inst.key ? 'API key saved — re-enter to update' : 'Enter API key to enable deletion'}" class="flex-1 bg-zinc-900 border ${inst.key?'border-emerald-800':'border-zinc-700'} text-zinc-200 text-xs rounded-lg px-2 py-1.5" oninput="updateArr(${idx},'key',this.value)"/>
+      <div class="space-y-2">
+        <input placeholder="Custom tab name (optional)" value="${esc(inst.custom_name||'')}" class="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs rounded-lg px-2 py-1.5" oninput="updateArr(${idx},'custom_name',this.value)" title="Override the tab label shown in the UI"/>
+        <input placeholder="Internal URL (e.g. http://192.168.1.210:7878)" value="${esc(inst.url||'')}" class="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs rounded-lg px-2 py-1.5 font-mono" oninput="updateArr(${idx},'url',this.value)"/>
+        <input type="password" value="${inst.key ? '••••••••••••••••••••••••••••' : ''}" placeholder="${inst.key ? '' : 'Enter API key to enable deletion'}" class="w-full bg-zinc-900 border ${inst.key?'border-emerald-800':'border-zinc-700'} text-zinc-200 text-xs rounded-lg px-2 py-1.5" oninput="updateArr(${idx},'key',this.value)" onfocus="if(this.value.startsWith('•'))this.value=''" onblur="if(this.value===''&&${JSON.stringify(!!inst.key)})this.value='••••••••••••••••••••••••••••'"/>
       </div>
     </div>`).join('');
 
-  showModal(`
-    <h2 class="text-base font-semibold logo-font mb-5">Settings</h2>
-    <div class="modal-field"><label>Emby URL (internal)</label><input id="cfg_emby_url" value="${esc(cfg.emby_url||'')}"/></div>
-    <div class="modal-field"><label>Emby API Key</label><input id="cfg_emby_key" type="password" placeholder="Leave blank to keep current" value="${esc(cfg.emby_key||'')}"/></div>
-    <div class="modal-field"><label>Overseerr / Seerr URL (internal)</label><input id="cfg_os_url" value="${esc(cfg.overseerr_url||'')}"/></div>
-    <div class="modal-field"><label>Overseerr / Seerr API Key</label><input id="cfg_os_key" type="password" placeholder="Leave blank to keep current" value="${esc(cfg.overseerr_key||'')}"/></div>
-    <div class="modal-field"><label>Overseerr Public URL (for clickable links, optional)</label><input id="cfg_os_public" placeholder="https://requests.yourdomain.com" value="${esc(cfg.overseerr_public_url||'')}"/></div>
-    <div class="modal-field"><label>Cache Refresh Interval</label>
-      <select id="cfg_interval">
-        <option value="6"  ${i==6?'selected':''}>Every 6 hours</option>
-        <option value="12" ${i==12?'selected':''}>Every 12 hours</option>
-        <option value="24" ${i==24?'selected':''}>Every 24 hours (default)</option>
-        <option value="48" ${i==48?'selected':''}>Every 48 hours</option>
-      </select>
-    </div>
+  const tabs = [
+    {id:'general', label:'General', icon:'fa-sliders'},
+    {id:'arr',     label:'Arr Stack', icon:'fa-server'},
+    {id:'logs',    label:'Logs', icon:'fa-list-ul'},
+  ];
 
-    <div class="border-t border-zinc-800 pt-4 mt-2 mb-4">
-      <div class="flex items-center justify-between mb-1">
+  const tabNav = tabs.map(t => `
+    <button onclick="switchSettingsTab('${t.id}')" id="stab_${t.id}"
+      class="w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center gap-2.5 transition-colors ${activeTab===t.id ? 'bg-yellow-400 text-black font-semibold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}">
+      <i class="fa-solid ${t.icon} w-4 text-center"></i>${t.label}
+    </button>`).join('');
+
+  const generalPanel = `
+    <div id="spanel_general" class="${activeTab==='general'?'':'hidden'}">
+      <p class="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-3">Emby</p>
+      <div class="modal-field"><label>Emby URL (internal)</label><input id="cfg_emby_url" value="${esc(cfg.emby_url||'')}"/></div>
+      <div class="modal-field"><label>Emby API Key</label><input id="cfg_emby_key" type="password" placeholder="Enter API key" value="${cfg.emby_key ? '••••••••••••••••••••••••••••' : ''}" onfocus="if(this.value.startsWith('•'))this.value=''" onblur="if(this.value===''&&${JSON.stringify(!!cfg.emby_key)})this.value='••••••••••••••••••••••••••••'"/></div>
+      <p class="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-3 mt-5">Seerr</p>
+      <div class="modal-field"><label>Seerr URL (internal)</label><input id="cfg_os_url" value="${esc(cfg.overseerr_url||'')}"/></div>
+      <div class="modal-field"><label>Seerr API Key</label><input id="cfg_os_key" type="password" placeholder="Enter API key" value="${cfg.overseerr_key ? '••••••••••••••••••••••••••••' : ''}" onfocus="if(this.value.startsWith('•'))this.value=''" onblur="if(this.value===''&&${JSON.stringify(!!cfg.overseerr_key)})this.value='••••••••••••••••••••••••••••'"/></div>
+      <div class="modal-field"><label>Seerr Public URL <span class="text-zinc-600 font-normal">(for clickable links, optional)</span></label><input id="cfg_os_public" placeholder="https://requests.yourdomain.com" value="${esc(cfg.overseerr_public_url||'')}"/></div>
+      <p class="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-3 mt-5">Cache</p>
+      <div class="modal-field"><label>Cache Refresh Interval</label>
+        <select id="cfg_interval">
+          <option value="1"   ${i==1?'selected':''}>Every 1 hour</option>
+          <option value="12"  ${i==12?'selected':''}>Every 12 hours</option>
+          <option value="24"  ${i==24?'selected':''}>Every 1 day (default)</option>
+          <option value="168" ${i==168?'selected':''}>Every 1 week</option>
+        </select>
+      </div>
+    </div>`;
+
+  const arrPanel = `
+    <div id="spanel_arr" class="${activeTab==='arr'?'':'hidden'}">
+      <div class="flex items-center justify-between mb-3">
         <div>
           <p class="text-xs font-semibold uppercase tracking-wide text-zinc-400">Arr Instances</p>
-          <p class="text-xs text-zinc-600 mt-0.5">Synced from Seerr · API keys must be entered manually</p>
+          <p class="text-xs text-zinc-600 mt-0.5">Drag to reorder · API keys and URLs entered manually</p>
         </div>
-        <button onclick="syncArrFromSeerr()" id="syncArrBtn" class="px-3 py-1.5 text-xs bg-zinc-800 border border-zinc-600 hover:border-yellow-400 hover:text-yellow-400 rounded-lg transition-colors">↻ Sync from Seerr</button>
+        <button onclick="syncArrFromSeerr()" id="syncArrBtn" class="px-3 py-1.5 text-xs bg-zinc-800 border border-zinc-600 hover:border-yellow-400 hover:text-yellow-400 rounded-lg transition-colors flex items-center gap-1.5">
+          <i class="fa-solid fa-rotate"></i> Sync from Seerr
+        </button>
       </div>
-      <div id="arr_instances_list" class="mt-3">
+      <div id="arr_instances_list" class="overflow-y-auto max-h-[50vh]">
         ${arrRows || '<p class="text-zinc-600 text-xs italic">Click "Sync from Seerr" to import your Radarr/Sonarr instances.</p>'}
       </div>
-    </div>
+    </div>`;
 
-    <div class="border-t border-zinc-800 pt-4">
-      <button onclick="closeModal();showLogs()" class="w-full px-4 py-2.5 text-sm border border-zinc-700 hover:border-zinc-500 rounded-xl transition-colors text-zinc-300 flex items-center gap-2 justify-center">
-        <i class="fa-solid fa-list-ul text-zinc-500"></i> View Activity Log
-      </button>
-    </div>
-    <div class="flex gap-3 justify-end mt-4">
-      <button onclick="closeModal()" class="px-5 py-2 border border-zinc-700 rounded-xl hover:border-zinc-500 transition-colors text-sm">Cancel</button>
-      <button onclick="saveSettings()" class="px-5 py-2 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors text-sm">Save</button>
+  const logsPanel = `
+    <div id="spanel_logs" class="${activeTab==='logs'?'':'hidden'}">
+      <div id="logs_content" class="overflow-y-auto max-h-[55vh]">
+        <div class="flex items-center justify-center py-8"><span class="spinner"></span><span class="text-zinc-500 text-sm ml-2">Loading…</span></div>
+      </div>
+    </div>`;
+
+  showModal(`
+    <div class="flex gap-0" style="min-height:420px">
+      <div class="flex flex-col gap-1 pr-4 border-r border-zinc-800 flex-shrink-0" style="width:130px">
+        <p class="text-xs font-semibold logo-font text-zinc-300 mb-2">Settings</p>
+        ${tabNav}
+      </div>
+      <div class="flex-1 pl-5 flex flex-col">
+        <div class="flex-1 overflow-y-auto">
+          ${generalPanel}
+          ${arrPanel}
+          ${logsPanel}
+        </div>
+        <div class="flex gap-3 justify-end pt-4 border-t border-zinc-800 mt-4">
+          <button onclick="closeModal()" class="px-5 py-2 border border-zinc-700 rounded-xl hover:border-zinc-500 transition-colors text-sm">Cancel</button>
+          <button onclick="saveSettings()" class="px-5 py-2 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors text-sm">Save</button>
+        </div>
+      </div>
     </div>`, true);
-  setTimeout(initArrDrag, 0);
+
+  if (activeTab === 'arr') setTimeout(initArrDrag, 0);
+  if (activeTab === 'logs') loadSettingsLogs();
 }
+
+function switchSettingsTab(tab) {
+  ['general','arr','logs'].forEach(t => {
+    document.getElementById(`spanel_${t}`)?.classList.toggle('hidden', t !== tab);
+    const btn = document.getElementById(`stab_${t}`);
+    if (btn) {
+      if (t === tab) {
+        btn.className = btn.className.replace('text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800','bg-yellow-400 text-black font-semibold');
+      } else {
+        btn.className = btn.className.replace('bg-yellow-400 text-black font-semibold','text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800');
+      }
+    }
+  });
+  if (tab === 'arr') setTimeout(initArrDrag, 0);
+  if (tab === 'logs') loadSettingsLogs();
+}
+
+async function loadSettingsLogs() {
+  const el = document.getElementById('logs_content');
+  if (!el) return;
+  try {
+    const data = await api('GET','/api/logs');
+    const logs = data.logs || [];
+    const typeIcon  = { login:'👤', flag:'🚩', admin:'⚙️', cache:'🔄', permissions:'👥', setup:'🔧' };
+    const typeLabel = { login:'Login', flag:'Flag', admin:'Admin', cache:'Cache', permissions:'Permissions', setup:'Setup' };
+    el.innerHTML = logs.length ? `
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-xs text-zinc-500">${logs.length} entries (most recent first)</span>
+      </div>
+      <div class="space-y-1">${logs.map(e => `
+        <div class="log-entry log-${e.type}">
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex items-center gap-2">
+              <span class="text-base">${typeIcon[e.type]||'📋'}</span>
+              <div>
+                <span class="text-xs font-semibold text-zinc-300">${typeLabel[e.type]||e.type}</span>
+                ${e.username ? `<span class="text-xs text-zinc-500 ml-1">· ${esc(e.username)}</span>` : ''}
+                ${e.ip ? `<span class="text-xs text-zinc-600 ml-1">· ${esc(e.ip)}</span>` : ''}
+              </div>
+            </div>
+            <span class="text-xs text-zinc-600 whitespace-nowrap flex-shrink-0">${e.dt}</span>
+          </div>
+          <p class="text-xs text-zinc-400 mt-1 ml-7">${esc(e.detail)}</p>
+        </div>`).join('')}
+      </div>` : '<p class="text-zinc-500 text-sm text-center py-8">No activity logged yet.</p>';
+  } catch(e) {
+    el.innerHTML = '<p class="text-red-400 text-sm text-center py-8">Error loading logs.</p>';
+  }
+}
+
 
 function updateArr(idx, field, val) {
   if (window._arrInstances[idx]) window._arrInstances[idx][field] = val.trim();
@@ -1056,20 +1176,17 @@ function initArrDrag() {
       if (dragSrcIdx === null || dragSrcIdx === targetIdx) return;
       const moved = window._arrInstances.splice(dragSrcIdx, 1)[0];
       window._arrInstances.splice(targetIdx, 0, moved);
-      // Reorder seerrServices to match new _arrInstances order
-      seerrServices = window._arrInstances
-        .map(inst => seerrServices.find(s => s.seerr_service_id === inst.seerr_service_id))
-        .filter(Boolean);
+      // seerrServices order is managed by loadReport — no manual reorder needed
       // Re-render preserving current field values
       const cfg_cached = {
         emby_url: document.getElementById('cfg_emby_url')?.value||'',
-        emby_key: '••••••••',
+        emby_key: '••••••••••••••••••••••••••••',
         overseerr_url: document.getElementById('cfg_os_url')?.value||'',
-        overseerr_key: '••••••••',
+        overseerr_key: '••••••••••••••••••••••••••••',
         overseerr_public_url: document.getElementById('cfg_os_public')?.value||'',
         cache_interval_hours: parseInt(document.getElementById('cfg_interval')?.value||24)
       };
-      renderSettingsModal(cfg_cached);
+      renderSettingsModal(cfg_cached, 'arr');
     });
   });
 }
@@ -1082,24 +1199,15 @@ async function syncArrFromSeerr() {
     window._arrInstances = result.arr_instances || [];
     const cfg_cached = {
       emby_url: document.getElementById('cfg_emby_url')?.value||'',
-      emby_key: '••••••••',
+      emby_key: '••••••••••••••••••••••••••••',
       overseerr_url: document.getElementById('cfg_os_url')?.value||'',
-      overseerr_key: '••••••••',
+      overseerr_key: '••••••••••••••••••••••••••••',
       overseerr_public_url: document.getElementById('cfg_os_public')?.value||'',
       cache_interval_hours: parseInt(document.getElementById('cfg_interval')?.value||24)
     };
-    renderSettingsModal(cfg_cached);
-    // Update tab labels immediately from synced custom names
-    seerrServices = seerrServices.map(svc => {
-      const [svcType, svcNum] = svc.seerr_service_id.split(':');
-      const inst = window._arrInstances.find(i =>
-        i.seerr_service_id === svc.seerr_service_id ||
-        (i.seerr_service_id === svcNum && i.type === svcType)
-      );
-      if (inst) svc.custom_name = inst.custom_name || '';
-      return svc;
-    });
-    renderLibTabs();
+    renderSettingsModal(cfg_cached, 'arr');
+    // Reload report to get fresh seerrServices with correct order/names
+    await loadReport();
     setStatus(`Synced ${result.count} Arr instance(s) from Seerr — enter API keys to enable deletion`);
   } catch(e) {
     if (btn) { btn.disabled=false; btn.textContent='↻ Sync from Seerr'; }
@@ -1116,75 +1224,27 @@ async function saveSettings() {
       cache_interval_hours: parseInt(document.getElementById('cfg_interval').value)
     };
     // Only send public URL if it looks like a real URL (not an encrypted string)
-    if (publicUrl && !publicUrl.startsWith('gAAAAA') && publicUrl !== '••••••••') {
+    if (publicUrl && !publicUrl.startsWith('gAAAAA') && publicUrl !== '••••••••••••••••••••••••••••') {
       payload.overseerr_public_url = publicUrl;
     } else if (!publicUrl) {
       payload.overseerr_public_url = '';
     }
     const embyKey = document.getElementById('cfg_emby_key').value.trim();
     const osKey   = document.getElementById('cfg_os_key').value.trim();
-    if (embyKey && embyKey !== '••••••••') payload.emby_key = embyKey;
-    if (osKey   && osKey   !== '••••••••') payload.overseerr_key = osKey;
+    if (embyKey && embyKey !== '••••••••••••••••••••••••••••') payload.emby_key = embyKey;
+    if (osKey   && osKey   !== '••••••••••••••••••••••••••••') payload.overseerr_key = osKey;
     await api('POST','/api/config', payload);
     // Save arr instances separately
     if (window._arrInstances !== undefined) {
       await api('POST','/api/config/arr', {arr_instances: window._arrInstances});
-      // Update tab labels immediately — match by composite ID or old-style bare ID
-      seerrServices = seerrServices.map(svc => {
-        // svc.seerr_service_id is e.g. "radarr:0"; inst may have "radarr:0" or old bare "0"
-        const [svcType, svcNum] = svc.seerr_service_id.split(':');
-        const inst = window._arrInstances.find(i =>
-          i.seerr_service_id === svc.seerr_service_id ||
-          (i.seerr_service_id === svcNum && i.type === svcType)
-        );
-        if (inst) svc.custom_name = inst.custom_name || '';
-        return svc;
-      });
-      renderLibTabs();
+      // Reload report to get fresh seerrServices with correct order/names
+      await loadReport();
     }
     closeModal(); setStatus('Settings saved.');
   } catch(e) { setStatus('Error: '+e.message); }
 }
 
 // ── Activity Log ──────────────────────────────────────────────────────────────
-async function showLogs() {
-  showModal(`<h2 class="text-base font-semibold logo-font mb-4">Activity Log</h2><div class="flex items-center justify-center py-8"><span class="spinner"></span><span class="text-zinc-500 text-sm">Loading…</span></div><div class="flex justify-end mt-4"><button onclick="closeModal()" class="px-5 py-2 border border-zinc-700 rounded-xl hover:border-zinc-500 transition-colors text-sm">Close</button></div>`, true);
-  try {
-    const data = await api('GET','/api/logs');
-    const logs = data.logs || [];
-    const typeIcon = { login:'👤', flag:'🚩', admin:'⚙️', cache:'🔄', permissions:'👥', setup:'🔧' };
-    const typeLabel = { login:'Login', flag:'Flag', admin:'Admin', cache:'Cache', permissions:'Permissions', setup:'Setup' };
-    const logHtml = logs.length ? logs.map(e => `
-      <div class="log-entry log-${e.type}">
-        <div class="flex items-start justify-between gap-2">
-          <div class="flex items-center gap-2">
-            <span class="text-base">${typeIcon[e.type]||'📋'}</span>
-            <div>
-              <span class="text-xs font-semibold text-zinc-300">${typeLabel[e.type]||e.type}</span>
-              ${e.username ? `<span class="text-xs text-zinc-500 ml-1">· ${esc(e.username)}</span>` : ''}
-              ${e.ip ? `<span class="text-xs text-zinc-600 ml-1">· ${esc(e.ip)}</span>` : ''}
-            </div>
-          </div>
-          <span class="text-xs text-zinc-600 whitespace-nowrap flex-shrink-0">${e.dt}</span>
-        </div>
-        <p class="text-xs text-zinc-400 mt-1 ml-7">${esc(e.detail)}</p>
-      </div>
-    `).join('') : '<p class="text-zinc-500 text-sm text-center py-8">No activity logged yet.</p>';
-
-    showModal(`
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-base font-semibold logo-font">Activity Log</h2>
-        <span class="text-xs text-zinc-500">${logs.length} entries (most recent first)</span>
-      </div>
-      <div class="space-y-1 max-h-[60vh] overflow-y-auto pr-1">${logHtml}</div>
-      <div class="flex justify-end mt-4">
-        <button onclick="closeModal()" class="px-5 py-2 border border-zinc-700 rounded-xl hover:border-zinc-500 transition-colors text-sm">Close</button>
-      </div>`, true);
-  } catch(e) {
-    setStatus('Error loading logs: '+e.message);
-    closeModal();
-  }
-}
 
 // ── Permissions ───────────────────────────────────────────────────────────────
 let _permsData = {};
