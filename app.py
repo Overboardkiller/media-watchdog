@@ -1523,10 +1523,31 @@ def get_seasons(req_id):
                 snum = s.get('IndexNumber')
                 if snum is None:
                     continue
+                # RecursiveItemCount is unreliable — some Emby setups/versions
+                # don't populate it even when explicitly requested in Fields,
+                # which silently showed "0 eps" for seasons that actually had
+                # episodes. Query the real episode count directly instead,
+                # the same way get_series_episodes() does elsewhere.
+                season_id = s.get('Id')
+                ep_count = s.get('RecursiveItemCount')
+                if not ep_count and season_id:
+                    try:
+                        ep_resp = req_lib.get(
+                            f"{cfg['emby_url']}/Items",
+                            params={'ParentId': season_id, 'Recursive': 'true',
+                                    'IncludeItemTypes': 'Episode', 'Fields': 'Id',
+                                    'Limit': 2000, 'api_key': cfg['emby_key']},
+                            timeout=10
+                        )
+                        if ep_resp.status_code == 200:
+                            ep_count = ep_resp.json().get('TotalRecordCount', 0)
+                    except Exception as e:
+                        print(f"[seasons] Episode count error for season {snum}: {e}")
+                        ep_count = 0
                 seasons.append({
                     'season':        snum,
                     'name':          s.get('Name', f'Season {snum}'),
-                    'episode_count': s.get('RecursiveItemCount', 0),
+                    'episode_count': ep_count or 0,
                     'in_emby':       True
                 })
         except Exception as e:
