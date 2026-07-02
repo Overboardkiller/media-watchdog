@@ -6,10 +6,11 @@
 <title>Media Watchdog</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="shortcut icon" href="/static/favicon.svg">
-<script src="https://cdn.tailwindcss.com"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+<link rel="stylesheet" href="/static/vendor/tailwind.min.css">
+<link rel="stylesheet" href="/static/vendor/fonts.css">
+<link rel="stylesheet" href="/static/vendor/fontawesome.min.css">
+<link rel="stylesheet" href="/static/vendor/solid.min.css">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap');
 body { font-family: 'Inter', system-ui, sans-serif; }
 .logo-font { font-family: 'Space Grotesk', sans-serif; }
 .table-row { transition: background 0.15s; }
@@ -778,11 +779,6 @@ async function doDelete(reqId) {
   if (!row) return;
 
   // Show confirmation modal with what will happen
-  const arrType = row.type === 'Movie' ? 'radarr' : 'sonarr';
-  const svc = seerrServices.find(s => s.seerr_service_id === row.service_id) ||
-              seerrServices.find(s => s.type === arrType && s.seerr_service_id.endsWith(':0'));
-  const hasKey = svc && svc.has_arr_key;
-
   showModal(`
     <h2 class="text-base font-semibold logo-font mb-3 text-red-400">⚠ Confirm Deletion</h2>
     <div class="bg-zinc-800 rounded-xl p-4 mb-4">
@@ -790,11 +786,16 @@ async function doDelete(reqId) {
       <p class="text-xs text-zinc-500 mt-1">${row.type} · Requested by ${esc(row.requested_by)}</p>
       ${row.flag_note ? `<p class="text-xs text-zinc-400 mt-2 italic">"${esc(row.flag_note)}"</p>` : ''}
     </div>
-    <div class="bg-zinc-900 rounded-xl p-3 mb-4 text-xs space-y-1">
-      ${hasKey
-        ? '<p class="text-zinc-400">✓ Remove from Radarr/Sonarr <span class="text-zinc-600">(files deleted from disk)</span></p>'
-        : '<p class="text-amber-400">✗ No Arr API key set — item will remain monitored in Radarr/Sonarr and files will NOT be deleted from disk</p>'
-      }
+    <div class="bg-zinc-900 rounded-xl p-3 mb-4 text-xs text-zinc-400 space-y-1">
+      ${(()=>{
+        const arrType = row.type === 'Movie' ? 'radarr' : 'sonarr';
+        const svc = seerrServices.find(s => s.seerr_service_id === row.service_id) ||
+                    seerrServices.find(s => s.type === arrType && s.seerr_service_id.endsWith(':0'));
+        const hasKey = svc && svc.has_arr_key;
+        return hasKey
+          ? '<p class="text-zinc-400">✓ Remove from Radarr/Sonarr <span class="text-zinc-600">(files deleted from disk)</span></p>'
+          : '<p class="text-amber-400">✗ No Arr API key set — item will remain monitored in Radarr/Sonarr and files will NOT be deleted from disk</p>';
+      })()}
       <p class="text-zinc-400">✓ Remove request from Seerr</p>
       ${hasKey
         ? '<p class="text-zinc-400">✓ Emby will clean up on next library scan</p>'
@@ -926,7 +927,7 @@ This cannot be undone.`)) return;
         <button onclick="closeModal()" class="px-5 py-2 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors text-sm">Done</button>
       </div>`);
     if (row) row.season_flags = [];
-    await loadReport(); setStatus('');
+    updateFlagBadge(); applyFilters(); setStatus('');
   } catch(e) { setStatus('Error: '+e.message); }
 }
 
