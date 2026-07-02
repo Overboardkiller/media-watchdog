@@ -1,0 +1,1347 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Media Watchdog</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="shortcut icon" href="/static/favicon.svg">
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap');
+body { font-family: 'Inter', system-ui, sans-serif; }
+.logo-font { font-family: 'Space Grotesk', sans-serif; }
+.table-row { transition: background 0.15s; }
+.table-row:hover { background-color: rgb(39 39 42); }
+.table-row.flagged-row { background-color: rgba(220,38,38,0.08); }
+.table-row.flagged-row:hover { background-color: rgba(220,38,38,0.14); }
+.table-row.protected-row { background-color: rgba(34,197,94,0.05); }
+.lib-tab { transition: all 0.15s; border-bottom: 2px solid transparent; white-space: nowrap; }
+.drag-handle { cursor: grab; color: rgb(113 113 122); user-select: none; }
+.drag-handle:active { cursor: grabbing; }
+.arr-row-dragging { opacity: 0.4; }
+.arr-row-drag-over { border-top: 2px solid rgb(234 179 8); }
+.lib-tab.active { color: rgb(234 179 8); border-bottom-color: rgb(234 179 8); }
+.lib-tab:hover:not(.active) { color: rgb(228 228 231); }
+.filter-pill { transition: all 0.15s; white-space: nowrap; }
+.watch-bar-label { max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #3f3f46; border-top-color: rgb(234 179 8); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.auth-card { background: rgb(24 24 27); border: 1px solid rgb(63 63 70); border-radius: 16px; padding: 32px; width: 100%; max-width: 420px; }
+.auth-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.auth-field label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: rgb(161 161 170); font-weight: 600; }
+.auth-field input { background: rgb(9 9 11); border: 1px solid rgb(63 63 70); color: rgb(228 228 231); font-size: 13px; padding: 9px 12px; border-radius: 10px; outline: none; width: 100%; transition: border-color 0.15s; }
+.auth-field input:focus { border-color: rgb(234 179 8); }
+.step-dot { width: 8px; height: 8px; border-radius: 50%; background: rgb(63 63 70); }
+.step-dot.active { background: rgb(234 179 8); }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
+.modal-card { background: rgb(24 24 27); border: 1px solid rgb(63 63 70); border-radius: 16px; padding: 28px; width: 100%; max-width: 540px; max-height: 90vh; overflow-y: auto; }
+.modal-card.wide { max-width: 720px; }
+.modal-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.modal-field label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: rgb(161 161 170); font-weight: 600; }
+.modal-field input, .modal-field select { background: rgb(9 9 11); border: 1px solid rgb(63 63 70); color: rgb(228 228 231); font-size: 13px; padding: 9px 12px; border-radius: 10px; outline: none; width: 100%; transition: border-color 0.15s; }
+.modal-field input:focus, .modal-field select:focus { border-color: rgb(234 179 8); }
+.perm-tag { display: inline-flex; align-items: center; gap: 6px; background: rgb(39 39 42); border: 1px solid rgb(63 63 70); padding: 3px 10px; border-radius: 20px; font-size: 11px; margin: 2px; }
+.drawer { position: fixed; inset: 0; z-index: 50; display: none; }
+.drawer.open { display: block; }
+.drawer-bg { position: absolute; inset: 0; background: rgba(0,0,0,0.6); }
+.drawer-panel { position: absolute; right: 0; top: 0; bottom: 0; width: 280px; background: rgb(24 24 27); border-left: 1px solid rgb(63 63 70); padding: 20px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+.log-entry { border-left: 3px solid; padding: 8px 12px; border-radius: 0 8px 8px 0; margin-bottom: 6px; }
+.log-login   { border-color: rgb(59 130 246); background: rgba(59,130,246,0.06); }
+.log-flag    { border-color: rgb(239 68 68); background: rgba(239,68,68,0.06); }
+.log-admin   { border-color: rgb(234 179 8); background: rgba(234,179,8,0.06); }
+.log-cache   { border-color: rgb(113 113 122); background: rgba(113,113,122,0.06); }
+.log-permissions { border-color: rgb(168 85 247); background: rgba(168,85,247,0.06); }
+.log-setup   { border-color: rgb(34 197 94); background: rgba(34,197,94,0.06); }
+@media (max-width: 768px) {
+  .col-type, .col-requested, .col-score, .col-last-watched { display: none; }
+  .table-wrap-inner { padding: 0 8px 16px; }
+}
+</style>
+</head>
+<body class="bg-zinc-950 text-zinc-200 min-h-screen">
+<div id="app" class="min-h-screen flex flex-col"></div>
+<div class="drawer" id="mobileDrawer">
+  <div class="drawer-bg" onclick="closeDrawer()"></div>
+  <div class="drawer-panel" id="drawerContent"></div>
+</div>
+<script>
+const API = '';
+let token = localStorage.getItem('mw_token');
+let currentUser = null;
+let allRows = [];
+let currentFilter = window.innerWidth < 768 ? 'unwatched' : 'all';
+let currentLibrary = 'All';
+let libraries = [];
+let _buildPollTimer = null;
+let viewingUserName = null;
+let seerrServices = [];
+
+function isMobile() { return window.innerWidth < 768; }
+function openDrawer() { document.getElementById('mobileDrawer').classList.add('open'); }
+function closeDrawer() { document.getElementById('mobileDrawer').classList.remove('open'); }
+
+async function api(method, path, body) {
+  const opts = { method, headers: {'Content-Type':'application/json'} };
+  if (token) opts.headers['X-Token'] = token;
+  if (body)  opts.body = JSON.stringify(body);
+  const resp = await fetch(API + path, opts);
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || resp.statusText);
+  return data;
+}
+
+async function init() {
+  const s = await api('GET', '/api/status');
+  if (!s.setup_complete) { renderSetup(1); return; }
+  if (!token) { renderLogin(); return; }
+  try { await loadReport(); }
+  catch(e) {
+    if (e.message === 'Unauthorised') { localStorage.removeItem('mw_token'); token = null; renderLogin(); }
+    else renderLogin(e.message);
+  }
+}
+
+// ── Setup ─────────────────────────────────────────────────────────────────────
+let setupData = {};
+function renderSetup(step) {
+  const steps = [1,2,3].map(i => `<div class="step-dot ${i===step?'active':''}"></div>`).join('');
+  let inner = '';
+  if (step === 1) {
+    inner = `
+      <div class="auth-field"><label>Emby URL</label><input id="s_emby_url" placeholder="http://192.168.1.x:8096"/></div>
+      <div class="auth-field"><label>Emby API Key</label><input id="s_emby_key" type="password" placeholder="From Emby Dashboard → API Keys"/></div>
+      <button onclick="setupStep2()" class="w-full bg-yellow-400 text-black font-semibold py-3 rounded-xl hover:bg-yellow-300 transition-colors mt-2">Next →</button>`;
+  } else if (step === 2) {
+    inner = `
+      <div class="auth-field"><label>Overseerr / Seerr URL</label><input id="s_os_url" placeholder="http://192.168.1.x:5055"/></div>
+      <div class="auth-field"><label>Overseerr / Seerr API Key</label><input id="s_os_key" type="password"/></div>
+      <div class="flex gap-3 mt-2">
+        <button onclick="renderSetup(1)" class="flex-1 border border-zinc-700 py-3 rounded-xl hover:border-zinc-500 transition-colors">← Back</button>
+        <button onclick="setupStep3()" class="flex-1 bg-yellow-400 text-black font-semibold py-3 rounded-xl hover:bg-yellow-300 transition-colors">Next →</button>
+      </div>`;
+  } else {
+    inner = `
+      <p class="text-zinc-400 text-sm mb-4">Sign in with your Emby account — this becomes the admin account.</p>
+      <div class="auth-field"><label>Emby Username</label><input id="s_user"/></div>
+      <div class="auth-field"><label>Emby Password</label><input id="s_pass" type="password"/></div>
+      <div class="flex gap-3 mt-2">
+        <button onclick="renderSetup(2)" class="flex-1 border border-zinc-700 py-3 rounded-xl hover:border-zinc-500 transition-colors">← Back</button>
+        <button id="s_btn" onclick="setupFinish()" class="flex-1 bg-yellow-400 text-black font-semibold py-3 rounded-xl hover:bg-yellow-300 transition-colors">Complete Setup</button>
+      </div>`;
+  }
+  document.getElementById('app').innerHTML = `
+    <div class="flex-1 flex items-center justify-center p-6">
+      <div class="auth-card">
+        <div class="flex items-center gap-3 mb-6">
+          <div class="w-8 h-8 bg-yellow-400 rounded-xl flex items-center justify-center text-black font-bold logo-font">W</div>
+          <span class="text-xl font-semibold logo-font">MEDIA<span class="text-yellow-400">/WATCHDOG</span></span>
+        </div>
+        <div class="flex items-center gap-2 mb-6">${steps}<span class="text-zinc-500 text-xs ml-2">Step ${step} of 3</span></div>
+        ${inner}
+        <div class="text-red-400 text-xs mt-3 min-h-4" id="s_err"></div>
+      </div>
+    </div>`;
+  if (step === 3) document.getElementById('s_pass')?.addEventListener('keydown', e => { if(e.key==='Enter') setupFinish(); });
+}
+
+function setupStep2() {
+  const url = document.getElementById('s_emby_url').value.trim(), key = document.getElementById('s_emby_key').value.trim();
+  if (!url||!key) { document.getElementById('s_err').textContent='Both fields required.'; return; }
+  setupData.emby_url=url; setupData.emby_key=key; renderSetup(2);
+}
+function setupStep3() {
+  const url = document.getElementById('s_os_url').value.trim(), key = document.getElementById('s_os_key').value.trim();
+  if (!url||!key) { document.getElementById('s_err').textContent='Both fields required.'; return; }
+  setupData.overseerr_url=url; setupData.overseerr_key=key; renderSetup(3);
+}
+async function setupFinish() {
+  const btn=document.getElementById('s_btn'), err=document.getElementById('s_err');
+  const user=document.getElementById('s_user').value.trim(), pass=document.getElementById('s_pass').value;
+  if (!user||!pass) { err.textContent='Username and password required.'; return; }
+  btn.disabled=true; btn.textContent='Setting up…';
+  try {
+    const res = await api('POST','/api/setup',{...setupData,username:user,password:pass});
+    token=res.token; localStorage.setItem('mw_token',token);
+    currentUser={username:res.username,is_admin:res.is_admin};
+    await loadReport();
+  } catch(e) { err.textContent=e.message; btn.disabled=false; btn.textContent='Complete Setup'; }
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+function renderLogin(errMsg) {
+  document.getElementById('app').innerHTML = `
+    <div class="flex-1 flex items-center justify-center p-6">
+      <div class="auth-card">
+        <div class="flex items-center gap-3 mb-8">
+          <div class="w-8 h-8 bg-yellow-400 rounded-xl flex items-center justify-center text-black font-bold logo-font">W</div>
+          <span class="text-xl font-semibold logo-font">MEDIA<span class="text-yellow-400">/WATCHDOG</span></span>
+        </div>
+        <p class="text-zinc-400 text-sm mb-6">Sign in with your Emby account.</p>
+        <div class="auth-field"><label>Username</label><input id="l_user" autocomplete="username"/></div>
+        <div class="auth-field"><label>Password</label><input id="l_pass" type="password" autocomplete="current-password"/></div>
+        <button id="l_btn" onclick="doLogin()" class="w-full bg-yellow-400 text-black font-semibold py-3 rounded-xl hover:bg-yellow-300 transition-colors mt-2">Sign In</button>
+        <div class="text-red-400 text-xs mt-3 min-h-4">${errMsg||''}</div>
+      </div>
+    </div>`;
+  document.getElementById('l_pass')?.addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+  document.getElementById('l_user')?.focus();
+}
+
+async function doLogin() {
+  const btn=document.getElementById('l_btn');
+  const user=document.getElementById('l_user').value.trim(), pass=document.getElementById('l_pass').value;
+  if (!user||!pass) { document.querySelector('.text-red-400').textContent='Enter username and password.'; return; }
+  btn.disabled=true; btn.textContent='Signing in…';
+  try {
+    const res = await api('POST','/api/login',{username:user,password:pass});
+    token=res.token; localStorage.setItem('mw_token',token);
+    currentUser={username:res.username,is_admin:res.is_admin};
+    await loadReport();
+  } catch(e) {
+    document.querySelector('.text-red-400').textContent=e.message;
+    btn.disabled=false; btn.textContent='Sign In';
+  }
+}
+
+async function doLogout() {
+  try { await api('POST','/api/logout'); } catch {}
+  localStorage.removeItem('mw_token'); token=null; currentUser=null; allRows=[]; libraries=[];
+  viewingUserName=null; closeDrawer(); renderLogin();
+}
+
+// ── Main report ───────────────────────────────────────────────────────────────
+async function loadReport() {
+  if (!currentUser && token) {
+    try {
+      const probe = await api('GET','/api/report');
+      currentUser = {username: probe.username, is_admin: probe.is_admin};
+    } catch(e) {
+      if (e.message==='Unauthorised') { localStorage.removeItem('mw_token'); token=null; renderLogin(); return; }
+    }
+  }
+  renderShell();
+  setStatus('Loading…', true);
+  try {
+    const data = await api('GET', '/api/report');
+    currentUser = {username:data.username, is_admin:data.is_admin};
+    allRows = data.results;
+    libraries = data.libraries || [];
+    // Always derive seerrServices from arr_instances (source of truth for order/names)
+    // Enrich with has_arr_key from seerr_services
+    const svcKeyMap = {};
+    (data.seerr_services || []).forEach(s => { svcKeyMap[s.seerr_service_id] = s.has_arr_key; });
+    if (data.arr_instances && data.arr_instances.length) {
+      seerrServices = data.arr_instances.map(inst => {
+        const sid = inst.seerr_service_id;
+        // Find matching seerr_service for url/type/name
+        const svc = (data.seerr_services || []).find(s => s.seerr_service_id === sid) || {};
+        return {
+          seerr_service_id: sid,
+          name:             inst.name || svc.name || '',
+          custom_name:      inst.custom_name || '',
+          type:             inst.type || svc.type || '',
+          url:              svc.url || '',
+          has_arr_key:      svcKeyMap[sid] || false
+        };
+      });
+    } else {
+      seerrServices = data.seerr_services || [];
+    }
+    updateUserPill();
+    renderLibTabs();
+    renderViewingSelector(data);
+    populateUserDropdown();
+    applyFilters();
+    if (data.building && !data.results.length) {
+      renderBuildingState();
+      clearTimeout(_buildPollTimer);
+      _buildPollTimer = setTimeout(() => loadReport(), 15000);
+      setStatus('Building cache for the first time…', true);
+    } else if (data.building) {
+      setStatus(`Showing cached data from ${fmtAge(data.built_at)} ago — refresh in progress…`, true);
+    } else {
+      setStatus(`${allRows.length} items · Cache from ${fmtAge(data.built_at)} ago · Auto-refreshes every ${data.cache_interval_hours||24}h`);
+    }
+  } catch(e) {
+    if (e.message==='Unauthorised') { localStorage.removeItem('mw_token'); token=null; renderLogin(); }
+    else setStatus('Error: '+e.message);
+  }
+}
+
+function renderViewingSelector(data) {
+  const el = document.getElementById('viewingSelector');
+  if (!el) return;
+  if (currentUser?.is_admin) { el.innerHTML=''; return; }
+  const names = [...new Set(data.results.map(r=>r.requested_by).filter(Boolean))].sort();
+  if (names.length <= 1) { el.innerHTML=''; return; }
+  el.innerHTML = `
+    <div class="flex items-center gap-2 flex-shrink-0">
+      <span class="text-zinc-500 text-xs uppercase tracking-wide">Viewing</span>
+      <select onchange="setViewingUser(this.value)" class="bg-zinc-900 border border-zinc-700 text-zinc-200 text-sm rounded-xl px-3 py-1.5">
+        <option value="">All accessible</option>
+        ${names.map(n=>`<option value="${esc(n)}" ${viewingUserName===n?'selected':''}>${esc(n)}</option>`).join('')}
+      </select>
+    </div>`;
+}
+
+function setViewingUser(name) { viewingUserName = name || null; applyFilters(); }
+
+function fmtAge(ts) {
+  if (!ts) return '?';
+  const s = Math.floor(Date.now()/1000 - ts);
+  if (s<60) return`${s}s`; if (s<3600) return`${Math.floor(s/60)}m`;
+  if (s<86400) return`${Math.floor(s/3600)}h`; return`${Math.floor(s/86400)}d`;
+}
+
+function updateUserPill() {
+  const el = document.getElementById('userPill');
+  if (!el || !currentUser) return;
+  el.innerHTML = `<span class="text-emerald-400 font-semibold">${esc(currentUser.username)}</span>${currentUser.is_admin?' <span class="text-yellow-400 text-xs">[admin]</span>':''}`;
+}
+
+function flaggedCount() { return allRows.filter(r=>r.flagged).length; }
+
+function renderShell() {
+  const isAdmin = currentUser?.is_admin;
+  const fc = flaggedCount();
+  document.getElementById('app').innerHTML = `
+  <nav class="border-b border-zinc-800 bg-zinc-900 sticky top-0 z-10">
+    <div class="px-4 md:px-6 py-0 flex items-stretch justify-between gap-2">
+      <div class="flex items-stretch gap-0 min-w-0 flex-1">
+        <div class="flex md:hidden items-center pr-3">
+          <button onclick="openLibraryMenu()" class="p-2 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors">
+            <i class="fa-solid fa-bars text-zinc-300"></i>
+          </button>
+        </div>
+        <div class="flex items-center gap-2 md:gap-3 pr-4 md:pr-8 md:border-r border-zinc-800 flex-shrink-0">
+          <div class="w-7 h-7 bg-yellow-400 rounded-lg flex items-center justify-center text-black font-bold logo-font text-sm">W</div>
+          <span class="font-semibold logo-font text-base md:text-lg">MEDIA<span class="text-yellow-400">/WATCHDOG</span></span>
+        </div>
+        <div id="libTabs" class="hidden md:flex items-stretch gap-0 overflow-x-auto scrollbar-hide"></div>
+      </div>
+      <div class="hidden md:flex items-center gap-3 py-3 flex-shrink-0">
+        <div id="userPill" class="bg-zinc-800 rounded-full px-4 py-1.5 text-sm">Loading…</div>
+        ${isAdmin ? `
+          <button onclick="showSettings()" class="px-4 py-2 text-sm font-medium border border-zinc-700 hover:border-zinc-500 rounded-xl transition-colors">Settings</button>
+          <button onclick="showPermissions()" class="px-4 py-2 text-sm font-medium border border-zinc-700 hover:border-zinc-500 rounded-xl transition-colors">Permissions</button>
+          <select id="userFilter" onchange="applyFilters()" class="bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm rounded-xl px-3 py-2">
+            <option value="">All Users</option>
+          </select>
+          <button id="refreshBtn" onclick="forceRefresh()" class="bg-yellow-400 hover:bg-yellow-300 text-black font-semibold px-4 py-2 text-sm rounded-xl transition-colors">↻ Rebuild Cache</button>
+        ` : `<button onclick="loadReport()" class="px-4 py-2 text-sm font-medium border border-zinc-700 hover:border-zinc-500 rounded-xl transition-colors">↻ Refresh</button>`}
+        <button onclick="doLogout()" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-xl text-sm font-medium transition-colors">Sign Out</button>
+      </div>
+      <div class="flex md:hidden items-center py-3">
+        <button onclick="openMobileMenu()" class="p-2 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors w-10">
+          <i class="fa-solid fa-ellipsis-vertical text-zinc-300"></i>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="px-4 md:px-6 pt-4 pb-3 flex flex-col md:flex-row md:items-center gap-3 md:justify-between mx-auto w-full" style="max-width:min(98%,1800px)">
+    <div class="flex items-center gap-2 bg-zinc-900 rounded-3xl p-1 border border-zinc-800 overflow-x-auto">
+      ${['all','unwatched','active','flagged','notemby'].map(f => {
+        const labels = {all:'All',unwatched:'Never Watched',active:'Active',flagged:'Flagged',notemby:'Not in Emby'};
+        const active = currentFilter===f;
+        const badge = f==='flagged' && fc>0 ? `<span class="ml-1 bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full leading-none">${fc}</span>` : '';
+        return `<button data-f="${f}" onclick="setFilter('${f}')" class="filter-pill px-4 md:px-5 py-2 md:py-2.5 ${active?'bg-yellow-400 text-black font-semibold':'hover:bg-zinc-800 text-zinc-300'} rounded-3xl text-xs md:text-sm transition-all flex-shrink-0 flex items-center gap-1">${labels[f]}${badge}</button>`;
+      }).join('')}
+    </div>
+    <div class="flex items-center gap-4 text-sm flex-shrink-0">
+      <div id="statsBar" class="flex items-center gap-3 overflow-x-auto"></div>
+      <div id="viewingSelector"></div>
+    </div>
+  </div>
+
+  <div class="px-4 md:px-6 pb-6 flex-1 mx-auto w-full table-wrap-inner" style="max-width:min(98%,1800px)" id="tableWrap"></div>
+  <div id="statusBar" class="text-center text-xs text-zinc-600 py-4 border-t border-zinc-900 px-4"></div>`;
+}
+
+function openMobileMenu() {
+  const isAdmin = currentUser?.is_admin;
+  const drawerContent = document.getElementById('drawerContent');
+  const panel = document.querySelector('.drawer-panel');
+  if (panel) { panel.style.left='auto'; panel.style.right='0'; panel.style.borderRight='none'; panel.style.borderLeft='1px solid rgb(63 63 70)'; }
+  drawerContent.innerHTML = `
+    <div class="flex items-center justify-between mb-4">
+      <span class="font-semibold logo-font">Menu</span>
+      <button onclick="closeDrawer()" class="p-1 text-zinc-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <div id="userPillMobile" class="bg-zinc-800 rounded-xl px-4 py-3 text-sm mb-2">Loading…</div>
+    ${isAdmin ? `
+      <button onclick="closeDrawer();showSettings()" class="w-full text-left px-4 py-3 border border-zinc-700 hover:border-zinc-500 rounded-xl transition-colors text-sm">⚙ Settings</button>
+      <button onclick="closeDrawer();showPermissions()" class="w-full text-left px-4 py-3 border border-zinc-700 hover:border-zinc-500 rounded-xl transition-colors text-sm">👥 Permissions</button>
+      <div class="modal-field mt-1">
+        <label>Filter by User</label>
+        <select id="userFilterMobile" onchange="document.getElementById('userFilter')&&(document.getElementById('userFilter').value=this.value);applyFilters()" class="bg-zinc-900 border border-zinc-700 text-zinc-200 text-sm rounded-xl px-3 py-2">
+          <option value="">All Users</option>
+        </select>
+      </div>
+      <button id="refreshBtnMobile" onclick="closeDrawer();forceRefresh()" class="w-full bg-yellow-400 hover:bg-yellow-300 text-black font-semibold px-4 py-3 text-sm rounded-xl transition-colors">↻ Rebuild Cache</button>
+    ` : `<button onclick="closeDrawer();loadReport()" class="w-full text-left px-4 py-3 border border-zinc-700 hover:border-zinc-500 rounded-xl transition-colors text-sm">↻ Refresh</button>`}
+    <button onclick="doLogout()" class="w-full bg-red-600 hover:bg-red-700 px-4 py-3 rounded-xl text-sm font-medium transition-colors mt-auto">Sign Out</button>`;
+
+  if (currentUser) {
+    const pill = document.getElementById('userPillMobile');
+    if (pill) pill.innerHTML = `Signed in as <span class="text-emerald-400 font-semibold">${esc(currentUser.username)}</span>${currentUser.is_admin?' <span class="text-yellow-400 text-xs">[admin]</span>':''}`;
+  }
+  if (isAdmin) {
+    const sel = document.getElementById('userFilterMobile');
+    if (sel) {
+      const names = [...new Set(allRows.map(r=>r.requested_by).filter(Boolean))].sort();
+      const currentVal = document.getElementById('userFilter')?.value || '';
+      names.forEach(n => { const o=document.createElement('option'); o.value=n; o.textContent=n; if(currentVal===n) o.selected=true; sel.appendChild(o); });
+    }
+  }
+  openDrawer();
+}
+
+function openLibraryMenu() {
+  const drawerContent = document.getElementById('drawerContent');
+  const tabs = getServiceTabs();
+  const panel = document.querySelector('.drawer-panel');
+  if (panel) { panel.style.right='auto'; panel.style.left='0'; panel.style.borderLeft='none'; panel.style.borderRight='1px solid rgb(63 63 70)'; }
+  drawerContent.innerHTML = `
+    <div class="flex items-center justify-between mb-4">
+      <span class="font-semibold logo-font">Libraries</span>
+      <button onclick="closeDrawer()" class="p-1 text-zinc-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    ${tabs.map(tab => `
+      <button onclick="setLibrary('${esc(tab)}');closeDrawer()" class="w-full text-left px-4 py-3 rounded-xl transition-colors text-sm ${currentLibrary===tab?'bg-yellow-400 text-black font-semibold':'border border-zinc-700 hover:border-zinc-500 text-zinc-300'}">${esc(tab)}</button>
+    `).join('')}`;
+  openDrawer();
+}
+
+function getServiceTabs() {
+  // Use seerr services as tabs if available, else fall back to Emby libraries
+  if (seerrServices.length > 0) {
+    return ['All', ...seerrServices.map(s => s.custom_name || s.name)];
+  }
+  const libsWithItems = new Set(allRows.map(r => r.library).filter(Boolean));
+  return ['All', ...libraries.filter(lib => libsWithItems.has(lib))];
+}
+
+function getServiceForTab(tabName) {
+  // Match by custom_name first, then name
+  return seerrServices.find(s => (s.custom_name || s.name) === tabName);
+}
+
+function getServiceLabel(row) {
+  // Return the display name of the Arr service that owns this item
+  if (!seerrServices.length) return row.type; // fallback if no services
+  const arrType = row.type === 'Movie' ? 'radarr' : 'sonarr';
+  // Try exact match by service_id
+  if (row.service_id) {
+    const svc = seerrServices.find(s => s.seerr_service_id === row.service_id);
+    if (svc) return svc.custom_name || svc.name;
+  }
+  // Empty service_id = default instance (:0) of the right type
+  const defaultSvc = seerrServices.find(s => s.type === arrType && s.seerr_service_id.endsWith(':0'));
+  if (defaultSvc) return defaultSvc.custom_name || defaultSvc.name;
+  return row.type;
+}
+
+function renderLibTabs() {
+  const el = document.getElementById('libTabs');
+  if (!el) return;
+  const tabs = getServiceTabs();
+  el.innerHTML = tabs.map(tab => `
+    <button class="lib-tab px-4 md:px-5 py-3 md:py-4 text-xs md:text-sm font-semibold tracking-wide ${currentLibrary===tab?'active text-yellow-400':'text-zinc-500'}" onclick="setLibrary('${esc(tab)}')">${esc(tab).toUpperCase()}</button>
+  `).join('');
+}
+
+function populateUserDropdown() {
+  const sel = document.getElementById('userFilter');
+  if (!sel) return;
+  const current = sel.value;
+  const names = [...new Set(allRows.map(r=>r.requested_by).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">All Users</option>' + names.map(n=>`<option value="${esc(n)}" ${current===n?'selected':''}>${esc(n)}</option>`).join('');
+}
+
+function setLibrary(lib) { currentLibrary=lib; renderLibTabs(); applyFilters(); }
+
+function setFilter(f) {
+  currentFilter=f;
+  document.querySelectorAll('.filter-pill').forEach(b => {
+    const active = b.dataset.f===f;
+    b.classList.toggle('bg-yellow-400', active);
+    b.classList.toggle('text-black', active);
+    b.classList.toggle('font-semibold', active);
+    b.classList.toggle('text-zinc-300', !active);
+  });
+  applyFilters();
+}
+
+function applyFilters() {
+  let rows = allRows;
+
+  if (currentLibrary && currentLibrary !== 'All') {
+    const svc = getServiceForTab(currentLibrary);
+    if (svc) {
+      const svcType = svc.type === 'radarr' ? 'Movie' : 'Series';
+      // Seerr only returns serviceId for non-default instances (id > 0).
+      // Default instance (ending in :0) gets empty service_id — infer by type.
+      const isDefaultInstance = svc.seerr_service_id.endsWith(':0');
+      if (isDefaultInstance) {
+        // Default tab: items explicitly tagged with this service_id OR untagged items of the right type
+        rows = rows.filter(r => r.service_id === svc.seerr_service_id || (r.service_id === '' && r.type === svcType));
+      } else {
+        // Non-default (anime etc): only items explicitly tagged with this service_id
+        rows = rows.filter(r => r.service_id === svc.seerr_service_id);
+      }
+    } else {
+      // Fallback: Emby library name matching
+      if (currentFilter === 'notemby') {
+        const libLower = currentLibrary.toLowerCase();
+        const isMovieLib = libLower.includes('movie') || libLower.includes('film');
+        const isShowLib  = libLower.includes('show') || libLower.includes('tv') || libLower.includes('series');
+        if (isMovieLib) rows = rows.filter(r => r.type === 'Movie');
+        else if (isShowLib) rows = rows.filter(r => r.type === 'Series');
+      } else {
+        rows = rows.filter(r => r.library === currentLibrary);
+      }
+    }
+  }
+
+  const userSel = document.getElementById('userFilter');
+  if (userSel?.value) rows = rows.filter(r => r.requested_by === userSel.value);
+
+  if (!currentUser?.is_admin && viewingUserName) {
+    rows = rows.filter(r => r.requested_by === viewingUserName);
+  }
+
+  if (currentFilter === 'flagged') rows = rows.filter(r => r.flagged);
+  else if (currentFilter !== 'all') rows = rows.filter(r => r.status === currentFilter);
+
+  updateStats(rows);
+  renderTable(rows);
+}
+
+function updateStats(rows) {
+  const el = document.getElementById('statsBar');
+  if (!el) return;
+  const mobile = isMobile();
+  const items = [
+    {val:rows.length, label:'Total', col:'text-white'},
+    {val:rows.filter(r=>r.status==='unwatched').length, label:'Never Watched', col:'text-red-400'},
+    {val:rows.filter(r=>r.status==='active').length, label:'Active', col:'text-emerald-400'},
+    {val:rows.filter(r=>r.flagged).length, label:'Flagged', col:'text-red-400'},
+  ];
+  el.innerHTML = items.map((item,i) => `
+    ${i>0?'<div class="h-5 w-px bg-zinc-800 flex-shrink-0"></div>':''}
+    <div class="flex items-center gap-1.5 flex-shrink-0">
+      <span class="${item.col} font-semibold text-base md:text-lg font-mono">${item.val}</span>
+      ${!mobile?`<span class="text-zinc-500 text-xs uppercase tracking-wide">${item.label}</span>`:''}
+    </div>
+  `).join('');
+}
+
+function renderBuildingState() {
+  const wrap = document.getElementById('tableWrap');
+  if (!wrap) return;
+  wrap.innerHTML = `
+    <div class="flex flex-col items-center justify-center py-32 gap-4 text-center px-4">
+      <div class="w-12 h-12 border-4 border-zinc-700 border-t-yellow-400 rounded-full animate-spin"></div>
+      <h2 class="text-xl font-semibold logo-font">Building cache for the first time…</h2>
+      <p class="text-zinc-400 max-w-sm">Fetching all your requests and watch history. This takes a few minutes — the page will update automatically.</p>
+    </div>`;
+}
+
+function renderTable(rows) {
+  const wrap = document.getElementById('tableWrap');
+  if (!wrap) return;
+  if (!rows.length) {
+    wrap.innerHTML = `<div class="flex flex-col items-center justify-center py-24 gap-3 text-center"><p class="text-zinc-400 text-lg">No items match this filter.</p><p class="text-zinc-600 text-sm">Try a different filter or library.</p></div>`;
+    return;
+  }
+  const isAdmin = currentUser?.is_admin;
+
+  if (isMobile()) {
+    wrap.innerHTML = `<div class="flex flex-col gap-3">${rows.map(r => cardHtml(r, isAdmin)).join('')}</div><div class="mt-4 text-center text-xs text-zinc-600">${rows.length} titles shown</div>`;
+    return;
+  }
+
+  // Determine column visibility based on current tab
+  const tabSvc = currentLibrary !== 'All' ? getServiceForTab(currentLibrary) : null;
+  const tabIsRadarr = tabSvc && tabSvc.type === 'radarr';
+  const tabIsSonarr = tabSvc && tabSvc.type === 'sonarr';
+  // Admin: All shows both; Radarr tabs hide Watch Progress; Sonarr tabs hide Last Watched
+  // User: All shows both; Radarr tabs show Last Watched only; Sonarr tabs show Watch Progress only
+  const showLastWatched = !tabIsSonarr;
+  const showWatchProgress = !tabIsRadarr;
+
+  wrap.innerHTML = `
+    <div class="bg-zinc-900 rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl">
+      <div class="overflow-x-auto">
+      <table class="w-full">
+        <thead>
+          <tr class="border-b border-zinc-800 text-xs uppercase tracking-widest text-zinc-500">
+            <th class="text-left pl-8 py-5 font-medium">Title</th>
+            <th class="text-left py-5 font-medium">Type</th>
+            ${isAdmin?'<th class="text-left py-5 font-medium">Requested By</th>':''}
+            <th class="text-left py-5 font-medium">Requested</th>
+            <th class="text-left py-5 font-medium">TMDB</th>
+            <th class="text-left py-5 font-medium">Status</th>
+            ${showLastWatched ? '<th class="text-left py-5 font-medium">Last Watched</th>' : ''}
+            ${isAdmin && showWatchProgress ? '<th class="text-left py-5 font-medium">Watch Progress</th>' : ''}
+            ${!isAdmin && showWatchProgress ? '<th class="text-left py-5 font-medium">Watch Progress</th>' : ''}
+            <th class="text-right pr-8 py-5 font-medium">Action</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-zinc-800 text-sm">
+          ${rows.map(r=>rowHtml(r,isAdmin,showLastWatched,showWatchProgress)).join('')}
+        </tbody>
+      </table>
+      </div>
+    </div>
+    <div class="mt-4 text-center text-xs text-zinc-600">${rows.length} titles shown</div>`;
+}
+
+function actionButtons(r, isAdmin) {
+  const { req_id, flagged, flag_note, flag_by, protected: prot, protected_by, type, season_flags } = r;
+
+  if (prot) {
+    return `<span class="px-3 py-2 text-xs bg-emerald-950 border border-emerald-800 text-emerald-400 rounded-2xl whitespace-nowrap" title="Protected by ${esc(protected_by)}">🛡 Kept</span>
+      ${isAdmin ? `<button onclick="doUnprotect('${req_id}')" class="ml-1 px-2 py-2 text-xs border border-zinc-700 hover:border-zinc-500 rounded-2xl transition-colors text-zinc-500" title="Remove protection">✕</button>` : ''}`;
+  }
+
+  // Season flags (TV shows only, separate from full show flag)
+  const seasonFlagBadge = (season_flags?.length && !flagged) ? `
+    <div class="flex items-center gap-1.5 justify-end flex-wrap">
+      <span class="px-2 py-1 text-xs bg-amber-950 border border-amber-800 text-amber-400 rounded-xl whitespace-nowrap">🗓 S${season_flags.join(',S')} flagged</span>
+      ${isAdmin ? `
+        <button onclick="doDeleteSeasons('${req_id}')" class="px-3 py-2 text-xs bg-red-600 hover:bg-red-700 text-white rounded-2xl transition-colors font-medium whitespace-nowrap">Delete Seasons</button>
+        <button onclick="doKeep('${req_id}')" class="px-3 py-2 text-xs bg-emerald-700 hover:bg-emerald-600 text-white rounded-2xl transition-colors font-medium whitespace-nowrap">Keep</button>
+      ` : `<button onclick="showSeasonFlag('${req_id}')" class="px-3 py-2 text-xs border border-zinc-700 hover:border-zinc-500 rounded-2xl transition-colors text-zinc-400 whitespace-nowrap">Edit Seasons</button>`}
+    </div>` : '';
+
+  if (flagged) {
+    const noteTitle = flag_note ? ` title="Note: ${esc(flag_note)} — by ${esc(flag_by)}"` : ` title="Flagged by ${esc(flag_by)}"`;
+    if (isAdmin) {
+      return `<div class="flex items-center gap-1.5 justify-end flex-wrap">
+        <span${noteTitle} class="px-2 py-1 text-xs bg-red-950 border border-red-800 text-red-400 rounded-xl whitespace-nowrap">🚩 ${esc(flag_by)}</span>
+        <button onclick="doDelete('${req_id}')" class="px-3 py-2 text-xs bg-red-600 hover:bg-red-700 text-white rounded-2xl transition-colors font-medium whitespace-nowrap">Delete</button>
+        <button onclick="doKeep('${req_id}')" class="px-3 py-2 text-xs bg-emerald-700 hover:bg-emerald-600 text-white rounded-2xl transition-colors font-medium whitespace-nowrap">Keep</button>
+      </div>`;
+    } else {
+      return `<button${noteTitle} onclick="toggleFlag('${req_id}',false)" class="px-3 py-2 text-xs bg-red-950 border border-red-800 text-red-400 rounded-2xl hover:bg-red-900 transition-colors font-medium whitespace-nowrap">🚩 Unflag</button>`;
+    }
+  }
+
+  if (seasonFlagBadge) return seasonFlagBadge;
+
+  // Default: flag buttons
+  if (type === 'Series') {
+    return `<div class="flex items-center gap-1.5 justify-end flex-wrap">
+      <button onclick="toggleFlag('${req_id}',true)" class="px-3 py-2 text-xs border border-zinc-700 hover:border-red-800 hover:bg-red-950 hover:text-red-400 rounded-2xl transition-colors text-zinc-400 whitespace-nowrap">Flag Show</button>
+      <button onclick="showSeasonFlag('${req_id}')" class="px-3 py-2 text-xs border border-zinc-700 hover:border-amber-600 hover:bg-amber-950 hover:text-amber-400 rounded-2xl transition-colors text-zinc-400 whitespace-nowrap">Flag Seasons</button>
+    </div>`;
+  }
+  return `<button onclick="toggleFlag('${req_id}',true)" class="px-3 py-2 text-xs border border-zinc-700 hover:border-red-800 hover:bg-red-950 hover:text-red-400 rounded-2xl transition-colors text-zinc-400 whitespace-nowrap">Flag for Deletion</button>`;
+}
+
+function cardHtml(r, isAdmin) {
+  const lastPlayed = r.last_played ? new Date(r.last_played*1000).toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+  const reqDate = r.requested_at ? new Date(r.requested_at).toLocaleDateString('en-AU',{day:'2-digit',month:'short'}) : '—';
+  const watch = (r.type === 'Series') ? watchBars(r) : '';
+  const rowClass = r.protected ? 'protected-row' : r.flagged ? 'border-red-900' : 'border-zinc-800';
+  return `<div class="bg-zinc-900 border ${rowClass} rounded-2xl p-4 flex flex-col gap-3">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <a href="${r.overseerr_link}" target="_blank" class="font-medium hover:text-yellow-400 transition-colors block">${r.title === 'Unknown' ? `<span class="text-zinc-500 italic">Orphaned <span class="text-zinc-600 text-xs">(TMDB: ${r.tmdb_id||'?'})</span></span>` : esc(r.title)}</a>
+        <div class="text-xs text-zinc-500 mt-0.5">${r.year||''} · ${r.type} · ${scorePillText(r.score)}</div>
+      </div>
+      ${statusBadge(r.status)}
+    </div>
+    <div class="flex items-center gap-4 text-xs text-zinc-500">
+      <span>Requested ${reqDate}</span>
+      <span>Last watched ${lastPlayed}</span>
+    </div>
+    ${watch ? `<div>${watch}</div>` : ''}
+    <div>${actionButtons(r, isAdmin)}</div>
+  </div>`;
+}
+
+function scorePillText(score) {
+  if (score===null||score===undefined) return 'No score';
+  const pct = Math.round(score*10);
+  if (pct < 50) return `<span class="text-red-400 font-semibold">${pct}%</span>`;
+  return `${pct}%`;
+}
+
+function scorePill(score) {
+  if (score===null||score===undefined) return '<span class="text-zinc-500 text-xs">—</span>';
+  const pct = Math.round(score*10);
+  if (pct < 50) return `<span class="text-red-400 text-sm font-mono font-semibold">${pct}%</span>`;
+  return `<span class="text-zinc-300 text-sm font-mono">${pct}%</span>`;
+}
+
+function watchBars(r) {
+  const pcts = r.user_watch_pcts || {};
+  const entries = Object.entries(pcts).filter(([,pct]) => pct > 0);
+  if (r.type !== 'Series') return '<span class="text-zinc-600 text-xs">—</span>';
+  if (!entries.length) return '<span class="text-zinc-600 text-xs">No views</span>';
+  return `<div class="flex flex-col gap-1.5">${entries.map(([name,pct]) => {
+    const col = pct>=70?'bg-emerald-500':pct>=30?'bg-amber-400':'bg-red-500';
+    return `<div class="flex items-center gap-2">
+      <span class="watch-bar-label text-zinc-500 text-xs" title="${esc(name)}">${esc(name)}</span>
+      <div class="w-16 h-1.5 bg-zinc-700 rounded-full overflow-hidden flex-shrink-0"><div class="h-full ${col} rounded-full" style="width:${pct}%"></div></div>
+      <span class="text-zinc-400 text-xs font-mono w-7 text-right">${pct}%</span>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function statusBadge(status) {
+  return {
+    unwatched: `<span class="px-2 md:px-3 py-1 rounded-full text-xs font-semibold bg-red-950 text-red-400 uppercase tracking-wide whitespace-nowrap">Never Watched</span>`,
+    active:    `<span class="px-2 md:px-3 py-1 rounded-full text-xs font-semibold bg-emerald-950 text-emerald-400 uppercase tracking-wide whitespace-nowrap">Active</span>`,
+    notemby:   `<span class="px-2 md:px-3 py-1 rounded-full text-xs font-semibold bg-zinc-800 text-zinc-400 uppercase tracking-wide whitespace-nowrap">Not in Emby</span>`
+  }[status] || '';
+}
+
+function rowHtml(r, isAdmin, showLastWatched=true, showWatchProgress=true) {
+  const lastPlayed = r.last_played ? new Date(r.last_played*1000).toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'}) : '<span class="text-zinc-600">—</span>';
+  const reqDate = r.requested_at ? new Date(r.requested_at).toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+  const rowClass = r.protected ? 'table-row protected-row' : r.flagged ? 'table-row flagged-row' : 'table-row';
+  return `<tr class="${rowClass}">
+    <td class="pl-8 py-5">
+      <a href="${r.overseerr_link}" target="_blank" class="font-medium hover:text-yellow-400 transition-colors">${r.title === 'Unknown' ? `<span class="text-zinc-500 italic">Orphaned <span class="text-zinc-600 text-xs">(TMDB: ${r.tmdb_id||'?'})</span></span>` : esc(r.title)}</a>
+      ${r.year?`<div class="text-xs text-zinc-500 mt-0.5">${r.year}</div>`:''}
+    </td>
+    <td class="py-5 text-zinc-400 text-sm whitespace-nowrap">${getServiceLabel(r)}</td>
+    ${isAdmin?`<td class="py-5 text-sm pr-2">
+      <span>${esc(r.requested_by)}</span>
+      <button onclick="showReassign('${r.req_id}')" class="ml-1 text-zinc-600 hover:text-yellow-400 transition-colors text-xs" title="Reassign requester">✎</button>
+    </td>`:''}
+    <td class="py-5 text-zinc-400 text-sm whitespace-nowrap">${reqDate}</td>
+    <td class="py-5">${scorePill(r.score)}</td>
+    <td class="py-5">${statusBadge(r.status)}</td>
+    ${showLastWatched ? `<td class="py-5 text-zinc-400 text-sm whitespace-nowrap">${r.type==='Movie' ? lastPlayed : '<span class="text-zinc-700">—</span>'}</td>` : ''}
+    ${showWatchProgress && isAdmin ? `<td class="py-5">${r.type==='Series' ? watchBars(r) : '<span class="text-zinc-700">—</span>'}</td>` : ''}
+    ${showWatchProgress && !isAdmin ? `<td class="py-5">${r.type==='Series' ? watchBars(r) : '<span class="text-zinc-700">—</span>'}</td>` : ''}
+    <td class="pr-8 py-5 text-right">${actionButtons(r, isAdmin)}</td>
+  </tr>`;
+}
+
+// ── Flag / Keep / Delete actions ──────────────────────────────────────────────
+async function toggleFlag(reqId, flagging) {
+  try {
+    await api('POST', `/api/flag/${reqId}`, {flagged:flagging, note:''});
+    const row = allRows.find(r=>r.req_id===reqId);
+    if (row) { row.flagged=flagging; row.flag_note=''; row.flag_by=currentUser?.username; }
+    updateFlagBadge();
+    applyFilters();
+  } catch(e) { alert(e.message); }
+}
+
+async function doKeep(reqId) {
+  if (!confirm('Mark this item as protected? Users will not be able to flag it for deletion again.')) return;
+  try {
+    await api('POST', `/api/protect/${reqId}`, {protected: true});
+    const row = allRows.find(r=>r.req_id===reqId);
+    if (row) { row.protected=true; row.protected_by=currentUser?.username; row.flagged=false; }
+    updateFlagBadge();
+    applyFilters();
+  } catch(e) { alert(e.message); }
+}
+
+function updateFlagBadge() {
+  const fc = allRows.filter(r=>r.flagged).length;
+  document.querySelectorAll('.filter-pill[data-f="flagged"]').forEach(btn => {
+    // Remove existing badge if any
+    const existing = btn.querySelector('.flag-badge');
+    if (existing) existing.remove();
+    if (fc > 0) {
+      const badge = document.createElement('span');
+      badge.className = 'flag-badge ml-1 bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full leading-none';
+      badge.textContent = fc;
+      btn.appendChild(badge);
+    }
+  });
+}
+
+async function doUnprotect(reqId) {
+  if (!confirm('Remove protection from this item? Users will be able to flag it again.')) return;
+  try {
+    await api('POST', `/api/protect/${reqId}`, {protected: false});
+    const row = allRows.find(r=>r.req_id===reqId);
+    if (row) { row.protected=false; row.protected_by=''; }
+    applyFilters();
+  } catch(e) { alert(e.message); }
+}
+
+async function doDelete(reqId) {
+  const row = allRows.find(r=>r.req_id===reqId);
+  if (!row) return;
+
+  // Show confirmation modal with what will happen
+  showModal(`
+    <h2 class="text-base font-semibold logo-font mb-3 text-red-400">⚠ Confirm Deletion</h2>
+    <div class="bg-zinc-800 rounded-xl p-4 mb-4">
+      <p class="font-medium text-zinc-200">${esc(row.title)} <span class="text-zinc-500 text-sm">${row.year||''}</span></p>
+      <p class="text-xs text-zinc-500 mt-1">${row.type} · Requested by ${esc(row.requested_by)}</p>
+      ${row.flag_note ? `<p class="text-xs text-zinc-400 mt-2 italic">"${esc(row.flag_note)}"</p>` : ''}
+    </div>
+    <div class="bg-zinc-900 rounded-xl p-3 mb-4 text-xs text-zinc-400 space-y-1">
+      ${(()=>{
+        const arrType = row.type === 'Movie' ? 'radarr' : 'sonarr';
+        const svc = seerrServices.find(s => s.seerr_service_id === row.service_id) ||
+                    seerrServices.find(s => s.type === arrType && s.seerr_service_id.endsWith(':0'));
+        const hasKey = svc && svc.has_arr_key;
+        return hasKey
+          ? '<p class="text-zinc-400">✓ Remove from Radarr/Sonarr <span class="text-zinc-600">(files deleted from disk)</span></p>'
+          : '<p class="text-amber-400">✗ No Arr API key set — item will remain monitored in Radarr/Sonarr and files will NOT be deleted from disk</p>';
+      })()}
+      <p class="text-zinc-400">✓ Remove request from Seerr</p>
+      ${hasKey
+        ? '<p class="text-zinc-400">✓ Emby will clean up on next library scan</p>'
+        : '<p class="text-amber-400">✗ Files not deleted — Emby library unchanged</p>'
+      }
+    </div>
+    <p class="text-xs text-red-400 mb-4 font-medium">This cannot be undone.</p>
+    <div class="flex gap-3 justify-end">
+      <button onclick="closeModal()" class="px-5 py-2 border border-zinc-700 rounded-xl hover:border-zinc-500 transition-colors text-sm">Cancel</button>
+      <button onclick="closeModal();confirmDelete('${reqId}')" class="px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-xl transition-colors text-sm">Delete Permanently</button>
+    </div>`);
+}
+
+async function confirmDelete(reqId) {
+  setStatus('Deleting…', true);
+  try {
+    const result = await api('POST', `/api/delete/${reqId}`, {});
+
+    // Show result modal
+    const stepsList = result.steps.map(s => `<p class="text-xs text-emerald-400">✓ ${esc(s)}</p>`).join('');
+    const warnList  = result.warnings.map(w => `<p class="text-xs text-amber-400">⚠ ${esc(w)}</p>`).join('');
+    const errList   = result.errors.map(e => `<p class="text-xs text-red-400">✗ ${esc(e)}</p>`).join('');
+
+    showModal(`
+      <h2 class="text-base font-semibold logo-font mb-4">${result.ok ? '✓ Deleted' : '⚠ Partially Deleted'}</h2>
+      <p class="text-zinc-300 text-sm mb-4">${esc(result.title)}</p>
+      ${stepsList ? `<div class="space-y-1 mb-3">${stepsList}</div>` : ''}
+      ${warnList  ? `<div class="bg-amber-950 rounded-xl p-3 mb-3 space-y-1">${warnList}</div>` : ''}
+      ${errList   ? `<div class="bg-red-950 rounded-xl p-3 mb-3 space-y-1">${errList}</div>` : ''}
+      <div class="flex justify-end mt-4">
+        <button onclick="closeModal()" class="px-5 py-2 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors text-sm">Done</button>
+      </div>`);
+
+    // Only remove from local list if not aborted
+    if (!result.aborted) {
+      allRows = allRows.filter(r => r.req_id !== reqId);
+    }
+    updateFlagBadge();
+    applyFilters();
+    setStatus('');
+  } catch(e) {
+    setStatus('Delete failed: '+e.message);
+    showModal(`<h2 class="text-base font-semibold logo-font mb-3 text-red-400">Delete Failed</h2><p class="text-zinc-400 text-sm mb-4">${esc(e.message)}</p><div class="flex justify-end"><button onclick="closeModal()" class="px-5 py-2 border border-zinc-700 rounded-xl text-sm">Close</button></div>`);
+  }
+}
+
+// ── Season flags ──────────────────────────────────────────────────────────────
+async function showSeasonFlag(reqId) {
+  const row = allRows.find(r=>r.req_id===reqId);
+  if (!row) return;
+
+  showModal(`
+    <h2 class="text-base font-semibold logo-font mb-3">Flag Seasons for Deletion</h2>
+    <p class="text-zinc-400 text-sm mb-4">${esc(row.title)} — loading season data…</p>
+    <div class="flex justify-center py-6"><div class="w-8 h-8 border-4 border-zinc-700 border-t-yellow-400 rounded-full animate-spin"></div></div>`);
+
+  try {
+    const data = await api('GET', `/api/seasons/${reqId}`);
+    const seasons = data.seasons || [];
+    const flagged = new Set(data.flagged_seasons || []);
+
+    const statusLabel = {1:'Pending', 2:'Processing', 3:'Partially Available', 4:'Available', 5:'Deleted', 6:'Deleted'};
+
+    const seasonRows = seasons.map(s => `
+      <label class="flex items-center gap-3 p-3 bg-zinc-800 rounded-xl mb-2 cursor-pointer hover:bg-zinc-700 transition-colors">
+        <input type="checkbox" value="${s.season}" ${flagged.has(s.season)?'checked':''} class="season-chk w-4 h-4 accent-red-500"/>
+        <div class="flex-1">
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-medium text-zinc-200">${esc(s.name)}</span>
+            ${s.in_emby ? `<span class="text-xs bg-emerald-950 text-emerald-400 px-2 py-0.5 rounded-full">${s.episode_count} eps in Emby</span>` : '<span class="text-xs bg-zinc-700 text-zinc-400 px-2 py-0.5 rounded-full">Not in Emby</span>'}
+          </div>
+          ${s.requested ? `<div class="text-xs text-zinc-500 mt-0.5">Seerr: ${statusLabel[s.seerr_status]||'Requested'}</div>` : ''}
+        </div>
+      </label>`).join('');
+
+    showModal(`
+      <h2 class="text-base font-semibold logo-font mb-1">Flag Seasons for Deletion</h2>
+      <p class="text-zinc-400 text-sm mb-4">${esc(row.title)} — select seasons to flag. The show stays monitored in Seerr.</p>
+      <div class="mb-3">
+        <label class="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer mb-3">
+          <input type="checkbox" id="selectAllSeasons" onchange="toggleAllSeasons(this.checked)" class="w-4 h-4"/>
+          Select all seasons
+        </label>
+        ${seasonRows || '<p class="text-zinc-500 text-sm">No season data available.</p>'}
+      </div>
+      <div class="flex gap-3 justify-end mt-4">
+        <button onclick="closeModal()" class="px-5 py-2 border border-zinc-700 rounded-xl hover:border-zinc-500 transition-colors text-sm">Cancel</button>
+        <button onclick="submitSeasonFlags('${reqId}')" class="px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-xl transition-colors text-sm">Flag Selected Seasons</button>
+      </div>`);
+  } catch(e) {
+    showModal(`<h2 class="text-base font-semibold logo-font mb-3 text-red-400">Error</h2><p class="text-zinc-400 text-sm mb-4">${esc(e.message)}</p><div class="flex justify-end"><button onclick="closeModal()" class="px-5 py-2 border border-zinc-700 rounded-xl text-sm">Close</button></div>`);
+  }
+}
+
+function toggleAllSeasons(checked) {
+  document.querySelectorAll('.season-chk').forEach(c => c.checked = checked);
+}
+
+async function submitSeasonFlags(reqId) {
+  const selected = [...document.querySelectorAll('.season-chk:checked')].map(c => parseInt(c.value));
+  try {
+    await api('POST', `/api/flag/seasons/${reqId}`, {seasons: selected});
+    const row = allRows.find(r=>r.req_id===reqId);
+    if (row) row.season_flags = selected;
+    closeModal();
+    applyFilters();
+  } catch(e) { alert(e.message); }
+}
+
+async function doDeleteSeasons(reqId) {
+  const row = allRows.find(r=>r.req_id===reqId);
+  if (!row || !row.season_flags?.length) return;
+  const seasons = row.season_flags;
+  if (!confirm(`Delete seasons ${seasons.join(', ')} of "${row.title}"?
+
+Files will be deleted from Sonarr. The show stays monitored in Seerr for future seasons.
+
+This cannot be undone.`)) return;
+
+  setStatus('Deleting seasons…', true);
+  try {
+    const result = await api('POST', `/api/delete/seasons/${reqId}`, {seasons});
+    showModal(`
+      <h2 class="text-base font-semibold logo-font mb-4">${result.ok ? '✓ Seasons Deleted' : '⚠ Partial Delete'}</h2>
+      <p class="text-zinc-300 text-sm mb-4">${esc(result.title)}</p>
+      ${result.steps.map(s=>`<p class="text-xs text-emerald-400">✓ ${esc(s)}</p>`).join('')}
+      ${result.errors.map(e=>`<p class="text-xs text-red-400">✗ ${esc(e)}</p>`).join('')}
+      <div class="flex justify-end mt-4">
+        <button onclick="closeModal()" class="px-5 py-2 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors text-sm">Done</button>
+      </div>`);
+    if (row) row.season_flags = [];
+    updateFlagBadge(); applyFilters(); setStatus('');
+  } catch(e) { setStatus('Error: '+e.message); }
+}
+
+// ── Reassign requester ─────────────────────────────────────────────────────────
+async function showReassign(reqId) {
+  const row = allRows.find(r=>r.req_id===reqId);
+  if (!row) return;
+
+  // Get user list from permissions endpoint
+  let users = [];
+  try {
+    const perms = await api('GET', '/api/permissions');
+    users = perms.users || [];
+  } catch(e) { users = []; }
+
+  const userOpts = users.map(u => `<option value="${esc(u.id)}" data-name="${esc(u.name)}" ${u.name===row.requested_by?'selected':''}>${esc(u.name)}</option>`).join('');
+
+  showModal(`
+    <h2 class="text-base font-semibold logo-font mb-3">Reassign Requester</h2>
+    <div class="bg-zinc-800 rounded-xl p-3 mb-4">
+      <p class="text-xs text-zinc-500">Currently assigned to</p>
+      <p class="text-sm font-medium text-zinc-200 mt-0.5">${esc(row.requested_by)}</p>
+      <p class="text-xs text-zinc-600 mt-1">${esc(row.title)}</p>
+    </div>
+    <div class="modal-field">
+      <label>Reassign to</label>
+      <select id="reassign_user" class="bg-zinc-900 border border-zinc-700 text-zinc-200 text-sm rounded-xl px-3 py-2">
+        <option value="">Select user…</option>
+        ${userOpts}
+      </select>
+    </div>
+    <p class="text-xs text-zinc-600 mb-4">This only changes the requester in Watchdog — Seerr is not affected.</p>
+    <div class="flex gap-3 justify-end">
+      <button onclick="closeModal()" class="px-5 py-2 border border-zinc-700 rounded-xl hover:border-zinc-500 transition-colors text-sm">Cancel</button>
+      <button onclick="confirmReassign('${reqId}')" class="px-5 py-2 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors text-sm">Reassign</button>
+    </div>`);
+}
+
+async function confirmReassign(reqId) {
+  const sel = document.getElementById('reassign_user');
+  const selectedOpt = sel.options[sel.selectedIndex];
+  const newName = selectedOpt?.dataset?.name || '';
+  const newId   = sel.value;
+  if (!newName) { alert('Please select a user'); return; }
+  try {
+    await api('POST', `/api/reassign/${reqId}`, {username: newName, emby_id: newId});
+    const row = allRows.find(r=>r.req_id===reqId);
+    if (row) { row.requested_by = newName; row.requester_emby_id = newId; }
+    closeModal(); applyFilters();
+    setStatus(`Reassigned to ${newName}`);
+  } catch(e) { alert(e.message); }
+}
+
+async function forceRefresh() {
+  const btn = document.getElementById('refreshBtn') || document.getElementById('refreshBtnMobile');
+  if (btn) { btn.disabled=true; btn.textContent='Rebuilding…'; }
+  try {
+    await api('POST','/api/refresh');
+    setStatus('Cache rebuild started — page will update automatically…', true);
+    clearTimeout(_buildPollTimer);
+    _buildPollTimer = setTimeout(()=>loadReport(), 15000);
+  } catch(e) {
+    setStatus('Error: '+e.message);
+    if (btn) { btn.disabled=false; btn.textContent='↻ Rebuild Cache'; }
+  }
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+async function showSettings(tab='general') {
+  const cfg = await api('GET','/api/config');
+  const arrData = await api('GET','/api/config/arr');
+  window._arrInstances = arrData.arr_instances || [];
+  renderSettingsModal(cfg, tab);
+}
+
+function renderSettingsModal(cfg, activeTab='general') {
+  const i = cfg.cache_interval_hours||24;
+
+  // Build arr rows for Arr Stack tab
+  const arrRows = (window._arrInstances || []).map((inst,idx) => `
+    <div class="bg-zinc-800 rounded-xl p-3 mb-2 arr-draggable" id="arr_row_${idx}" draggable="true" data-idx="${idx}">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="text-xs text-zinc-500 w-16 flex-shrink-0">${inst.type==='radarr'?'🎬 Radarr':'📺 Sonarr'}</span>
+        <span class="text-xs text-zinc-400 flex-1 font-medium">${esc(inst.name||'')}</span>
+      </div>
+      <div class="space-y-2">
+        <input placeholder="Custom tab name (optional)" value="${esc(inst.custom_name||'')}" class="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs rounded-lg px-2 py-1.5" oninput="updateArr(${idx},'custom_name',this.value)" title="Override the tab label shown in the UI"/>
+        <input placeholder="Internal URL (e.g. http://192.168.1.210:7878)" value="${esc(inst.url||'')}" class="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs rounded-lg px-2 py-1.5 font-mono" oninput="updateArr(${idx},'url',this.value)"/>
+        <input type="password" value="${inst.key ? '••••••••••••••••••••••••••••' : ''}" placeholder="${inst.key ? '' : 'Enter API key to enable deletion'}" class="w-full bg-zinc-900 border ${inst.key?'border-emerald-800':'border-zinc-700'} text-zinc-200 text-xs rounded-lg px-2 py-1.5" oninput="updateArr(${idx},'key',this.value)" onfocus="if(this.value.startsWith('•'))this.value=''" onblur="if(this.value===''&&${JSON.stringify(!!inst.key)})this.value='••••••••••••••••••••••••••••'"/>
+      </div>
+    </div>`).join('');
+
+  const tabs = [
+    {id:'general', label:'General', icon:'fa-sliders'},
+    {id:'arr',     label:'Arr Stack', icon:'fa-server'},
+    {id:'logs',    label:'Logs', icon:'fa-list-ul'},
+  ];
+
+  const tabNav = tabs.map(t => `
+    <button onclick="switchSettingsTab('${t.id}')" id="stab_${t.id}"
+      class="w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center gap-2.5 transition-colors ${activeTab===t.id ? 'bg-yellow-400 text-black font-semibold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}">
+      <i class="fa-solid ${t.icon} w-4 text-center"></i>${t.label}
+    </button>`).join('');
+
+  const generalPanel = `
+    <div id="spanel_general" class="${activeTab==='general'?'':'hidden'}">
+      <p class="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-3">Emby</p>
+      <div class="modal-field"><label>Emby URL (internal)</label><input id="cfg_emby_url" value="${esc(cfg.emby_url||'')}"/></div>
+      <div class="modal-field"><label>Emby API Key</label><input id="cfg_emby_key" type="password" placeholder="Enter API key" value="${cfg.emby_key ? '••••••••••••••••••••••••••••' : ''}" onfocus="if(this.value.startsWith('•'))this.value=''" onblur="if(this.value===''&&${JSON.stringify(!!cfg.emby_key)})this.value='••••••••••••••••••••••••••••'"/></div>
+      <p class="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-3 mt-5">Seerr</p>
+      <div class="modal-field"><label>Seerr URL (internal)</label><input id="cfg_os_url" value="${esc(cfg.overseerr_url||'')}"/></div>
+      <div class="modal-field"><label>Seerr API Key</label><input id="cfg_os_key" type="password" placeholder="Enter API key" value="${cfg.overseerr_key ? '••••••••••••••••••••••••••••' : ''}" onfocus="if(this.value.startsWith('•'))this.value=''" onblur="if(this.value===''&&${JSON.stringify(!!cfg.overseerr_key)})this.value='••••••••••••••••••••••••••••'"/></div>
+      <div class="modal-field"><label>Seerr Public URL <span class="text-zinc-600 font-normal">(for clickable links, optional)</span></label><input id="cfg_os_public" placeholder="https://requests.yourdomain.com" value="${esc(cfg.overseerr_public_url||'')}"/></div>
+      <p class="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-3 mt-5">Cache</p>
+      <div class="modal-field"><label>Cache Refresh Interval</label>
+        <select id="cfg_interval">
+          <option value="1"   ${i==1?'selected':''}>Every 1 hour</option>
+          <option value="12"  ${i==12?'selected':''}>Every 12 hours</option>
+          <option value="24"  ${i==24?'selected':''}>Every 1 day (default)</option>
+          <option value="168" ${i==168?'selected':''}>Every 1 week</option>
+        </select>
+      </div>
+    </div>`;
+
+  const arrPanel = `
+    <div id="spanel_arr" class="${activeTab==='arr'?'':'hidden'}">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-wide text-zinc-400">Arr Instances</p>
+          <p class="text-xs text-zinc-600 mt-0.5">Drag to reorder · API keys and URLs entered manually</p>
+        </div>
+        <button onclick="syncArrFromSeerr()" id="syncArrBtn" class="px-3 py-1.5 text-xs bg-zinc-800 border border-zinc-600 hover:border-yellow-400 hover:text-yellow-400 rounded-lg transition-colors flex items-center gap-1.5">
+          <i class="fa-solid fa-rotate"></i> Sync from Seerr
+        </button>
+      </div>
+      <div id="arr_instances_list" class="overflow-y-auto max-h-[50vh]">
+        ${arrRows || '<p class="text-zinc-600 text-xs italic">Click "Sync from Seerr" to import your Radarr/Sonarr instances.</p>'}
+      </div>
+    </div>`;
+
+  const logsPanel = `
+    <div id="spanel_logs" class="${activeTab==='logs'?'':'hidden'}">
+      <div id="logs_content" class="overflow-y-auto max-h-[55vh]">
+        <div class="flex items-center justify-center py-8"><span class="spinner"></span><span class="text-zinc-500 text-sm ml-2">Loading…</span></div>
+      </div>
+    </div>`;
+
+  showModal(`
+    <div class="flex gap-0" style="min-height:420px">
+      <div class="flex flex-col gap-1 pr-4 border-r border-zinc-800 flex-shrink-0" style="width:130px">
+        <p class="text-xs font-semibold logo-font text-zinc-300 mb-2">Settings</p>
+        ${tabNav}
+      </div>
+      <div class="flex-1 pl-5 flex flex-col">
+        <div class="flex-1 overflow-y-auto">
+          ${generalPanel}
+          ${arrPanel}
+          ${logsPanel}
+        </div>
+        <div class="flex gap-3 justify-end pt-4 border-t border-zinc-800 mt-4">
+          <button onclick="closeModal()" class="px-5 py-2 border border-zinc-700 rounded-xl hover:border-zinc-500 transition-colors text-sm">Cancel</button>
+          <button onclick="saveSettings()" class="px-5 py-2 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors text-sm">Save</button>
+        </div>
+      </div>
+    </div>`, true);
+
+  if (activeTab === 'arr') setTimeout(initArrDrag, 0);
+  if (activeTab === 'logs') loadSettingsLogs();
+}
+
+function switchSettingsTab(tab) {
+  ['general','arr','logs'].forEach(t => {
+    document.getElementById(`spanel_${t}`)?.classList.toggle('hidden', t !== tab);
+    const btn = document.getElementById(`stab_${t}`);
+    if (btn) {
+      if (t === tab) {
+        btn.className = btn.className.replace('text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800','bg-yellow-400 text-black font-semibold');
+      } else {
+        btn.className = btn.className.replace('bg-yellow-400 text-black font-semibold','text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800');
+      }
+    }
+  });
+  if (tab === 'arr') setTimeout(initArrDrag, 0);
+  if (tab === 'logs') loadSettingsLogs();
+}
+
+async function loadSettingsLogs() {
+  const el = document.getElementById('logs_content');
+  if (!el) return;
+  try {
+    const data = await api('GET','/api/logs');
+    const logs = data.logs || [];
+    const typeIcon  = { login:'👤', flag:'🚩', admin:'⚙️', cache:'🔄', permissions:'👥', setup:'🔧' };
+    const typeLabel = { login:'Login', flag:'Flag', admin:'Admin', cache:'Cache', permissions:'Permissions', setup:'Setup' };
+    el.innerHTML = logs.length ? `
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-xs text-zinc-500">${logs.length} entries (most recent first)</span>
+      </div>
+      <div class="space-y-1">${logs.map(e => `
+        <div class="log-entry log-${e.type}">
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex items-center gap-2">
+              <span class="text-base">${typeIcon[e.type]||'📋'}</span>
+              <div>
+                <span class="text-xs font-semibold text-zinc-300">${typeLabel[e.type]||e.type}</span>
+                ${e.username ? `<span class="text-xs text-zinc-500 ml-1">· ${esc(e.username)}</span>` : ''}
+                ${e.ip ? `<span class="text-xs text-zinc-600 ml-1">· ${esc(e.ip)}</span>` : ''}
+              </div>
+            </div>
+            <span class="text-xs text-zinc-600 whitespace-nowrap flex-shrink-0">${e.dt}</span>
+          </div>
+          <p class="text-xs text-zinc-400 mt-1 ml-7">${esc(e.detail)}</p>
+        </div>`).join('')}
+      </div>` : '<p class="text-zinc-500 text-sm text-center py-8">No activity logged yet.</p>';
+  } catch(e) {
+    el.innerHTML = '<p class="text-red-400 text-sm text-center py-8">Error loading logs.</p>';
+  }
+}
+
+
+function updateArr(idx, field, val) {
+  if (window._arrInstances[idx]) window._arrInstances[idx][field] = val.trim();
+}
+
+function initArrDrag() {
+  const list = document.getElementById('arr_instances_list');
+  if (!list) return;
+  let dragSrcIdx = null;
+  list.querySelectorAll('.arr-draggable').forEach(row => {
+    row.addEventListener('dragstart', e => {
+      dragSrcIdx = parseInt(row.dataset.idx);
+      row.classList.add('arr-row-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('arr-row-dragging');
+      list.querySelectorAll('.arr-row-drag-over').forEach(r => r.classList.remove('arr-row-drag-over'));
+    });
+    row.addEventListener('dragover', e => {
+      e.preventDefault();
+      list.querySelectorAll('.arr-row-drag-over').forEach(r => r.classList.remove('arr-row-drag-over'));
+      row.classList.add('arr-row-drag-over');
+    });
+    row.addEventListener('drop', e => {
+      e.preventDefault();
+      const targetIdx = parseInt(row.dataset.idx);
+      if (dragSrcIdx === null || dragSrcIdx === targetIdx) return;
+      const moved = window._arrInstances.splice(dragSrcIdx, 1)[0];
+      window._arrInstances.splice(targetIdx, 0, moved);
+      // seerrServices order is managed by loadReport — no manual reorder needed
+      // Re-render preserving current field values
+      const cfg_cached = {
+        emby_url: document.getElementById('cfg_emby_url')?.value||'',
+        emby_key: '••••••••••••••••••••••••••••',
+        overseerr_url: document.getElementById('cfg_os_url')?.value||'',
+        overseerr_key: '••••••••••••••••••••••••••••',
+        overseerr_public_url: document.getElementById('cfg_os_public')?.value||'',
+        cache_interval_hours: parseInt(document.getElementById('cfg_interval')?.value||24)
+      };
+      renderSettingsModal(cfg_cached, 'arr');
+    });
+  });
+}
+
+async function syncArrFromSeerr() {
+  const btn = document.getElementById('syncArrBtn');
+  if (btn) { btn.disabled=true; btn.textContent='Syncing…'; }
+  try {
+    const result = await api('POST', '/api/config/arr/sync', {});
+    window._arrInstances = result.arr_instances || [];
+    const cfg_cached = {
+      emby_url: document.getElementById('cfg_emby_url')?.value||'',
+      emby_key: '••••••••••••••••••••••••••••',
+      overseerr_url: document.getElementById('cfg_os_url')?.value||'',
+      overseerr_key: '••••••••••••••••••••••••••••',
+      overseerr_public_url: document.getElementById('cfg_os_public')?.value||'',
+      cache_interval_hours: parseInt(document.getElementById('cfg_interval')?.value||24)
+    };
+    renderSettingsModal(cfg_cached, 'arr');
+    // Reload report to get fresh seerrServices with correct order/names
+    await loadReport();
+    setStatus(`Synced ${result.count} Arr instance(s) from Seerr — enter API keys to enable deletion`);
+  } catch(e) {
+    if (btn) { btn.disabled=false; btn.textContent='↻ Sync from Seerr'; }
+    alert('Sync failed: ' + e.message);
+  }
+}
+
+async function saveSettings() {
+  try {
+    const publicUrl = document.getElementById('cfg_os_public').value.trim();
+    const payload = {
+      emby_url:             document.getElementById('cfg_emby_url').value.trim(),
+      overseerr_url:        document.getElementById('cfg_os_url').value.trim(),
+      cache_interval_hours: parseInt(document.getElementById('cfg_interval').value)
+    };
+    // Only send public URL if it looks like a real URL (not an encrypted string)
+    if (publicUrl && !publicUrl.startsWith('gAAAAA') && publicUrl !== '••••••••••••••••••••••••••••') {
+      payload.overseerr_public_url = publicUrl;
+    } else if (!publicUrl) {
+      payload.overseerr_public_url = '';
+    }
+    const embyKey = document.getElementById('cfg_emby_key').value.trim();
+    const osKey   = document.getElementById('cfg_os_key').value.trim();
+    if (embyKey && embyKey !== '••••••••••••••••••••••••••••') payload.emby_key = embyKey;
+    if (osKey   && osKey   !== '••••••••••••••••••••••••••••') payload.overseerr_key = osKey;
+    await api('POST','/api/config', payload);
+    // Save arr instances separately
+    if (window._arrInstances !== undefined) {
+      await api('POST','/api/config/arr', {arr_instances: window._arrInstances});
+      // Reload report to get fresh seerrServices with correct order/names
+      await loadReport();
+    }
+    closeModal(); setStatus('Settings saved.');
+  } catch(e) { setStatus('Error: '+e.message); }
+}
+
+// ── Activity Log ──────────────────────────────────────────────────────────────
+
+// ── Permissions ───────────────────────────────────────────────────────────────
+let _permsData = {};
+let _permsUsers = [];
+let _selectedPermUser = null;
+
+async function showPermissions() {
+  const data = await api('GET','/api/permissions');
+  _permsUsers = data.users;
+  _permsData = JSON.parse(JSON.stringify(data.permissions));
+  _selectedPermUser = _selectedPermUser || (_permsUsers[0]?.id || null);
+  renderPermissionsModal();
+}
+
+function renderPermissionsModal() {
+  const users = _permsUsers, perms = _permsData;
+  const selUser = users.find(u => u.id === _selectedPermUser);
+  const granted = selUser ? (perms[selUser.id]||[]).map(gid => {
+    const gu = users.find(x=>x.id===gid);
+    return gu ? `<span class="perm-tag">${esc(gu.name)}<button onclick="removePermUI('${selUser.id}','${gid}')" class="text-zinc-500 hover:text-red-400 ml-1 text-base leading-none">×</button></span>` : '';
+  }).join('') : '';
+  const alreadyGranted = selUser ? (perms[selUser.id]||[]) : [];
+  const addOpts = users.filter(u => selUser && u.id !== selUser.id && !alreadyGranted.includes(u.id))
+    .map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('');
+
+  showModal(`
+    <h2 class="text-base font-semibold logo-font mb-1">User Permissions</h2>
+    <p class="text-zinc-400 text-sm mb-5">Grant users access to see other users' requests.</p>
+    <div class="modal-field">
+      <label>Select User</label>
+      <select onchange="selectPermUser(this.value)" class="bg-zinc-900 border border-zinc-700 text-zinc-200 text-sm rounded-xl px-3 py-2">
+        ${users.map(u=>`<option value="${u.id}" ${u.id===_selectedPermUser?'selected':''}>${esc(u.name)}</option>`).join('')}
+      </select>
+    </div>
+    ${selUser ? `
+      <div class="bg-zinc-800 rounded-xl p-4 mb-4">
+        <div class="text-xs uppercase tracking-wide text-zinc-500 mb-2">
+          <span class="text-zinc-300 font-semibold">${esc(selUser.name)}</span> can see requests from:
+        </div>
+        <div class="flex flex-wrap gap-1 min-h-6">
+          ${granted || '<span class="text-zinc-600 text-xs italic">No extra access granted</span>'}
+        </div>
+      </div>
+      <div class="modal-field">
+        <label>Grant access to another user's requests</label>
+        <div class="flex gap-2">
+          <select id="perm_add_sel" class="flex-1 bg-zinc-900 border border-zinc-700 text-zinc-300 text-sm rounded-xl px-3 py-2">
+            <option value="">Select user…</option>${addOpts||'<option disabled>All users already granted</option>'}
+          </select>
+          <button onclick="addPermUI('${selUser.id}')" class="px-4 py-2 text-sm border border-zinc-700 hover:border-yellow-400 hover:text-yellow-400 rounded-xl transition-colors flex-shrink-0">Grant</button>
+        </div>
+      </div>
+    ` : '<p class="text-zinc-500 text-sm">No users found.</p>'}
+    <div class="flex justify-end mt-5">
+      <button onclick="closeModal()" class="px-5 py-2 bg-yellow-400 text-black font-semibold rounded-xl hover:bg-yellow-300 transition-colors text-sm">Done</button>
+    </div>`);
+}
+
+function selectPermUser(userId) { _selectedPermUser = userId; renderPermissionsModal(); }
+
+async function addPermUI(userId) {
+  const sel = document.getElementById('perm_add_sel');
+  const targetId = sel?.value; if (!targetId) return;
+  const current = _permsData[userId]||[];
+  if (current.includes(targetId)) return;
+  current.push(targetId); _permsData[userId]=current;
+  await api('POST','/api/permissions',{user_id:userId,can_see:current});
+  renderPermissionsModal();
+}
+
+async function removePermUI(userId, targetId) {
+  const current = (_permsData[userId]||[]).filter(x=>x!==targetId);
+  _permsData[userId]=current;
+  await api('POST','/api/permissions',{user_id:userId,can_see:current});
+  renderPermissionsModal();
+}
+
+function showModal(html, wide=false) {
+  const existing = document.getElementById('modal_bg'); if (existing) existing.remove();
+  const div = document.createElement('div');
+  div.className='modal-overlay'; div.id='modal_bg';
+  div.innerHTML=`<div class="modal-card${wide?' wide':''}">${html}</div>`;
+  // Only close on click if mousedown also started on the backdrop (not a drag off the card)
+  let _mousedownOnBackdrop = false;
+  div.addEventListener('mousedown', e => { _mousedownOnBackdrop = e.target === div; });
+  div.addEventListener('click', e => { if(e.target===div && _mousedownOnBackdrop) closeModal(); });
+  document.body.appendChild(div);
+}
+function closeModal() { const m=document.getElementById('modal_bg'); if(m) m.remove(); }
+
+function setStatus(msg, loading=false) {
+  const el = document.getElementById('statusBar'); if (!el) return;
+  el.innerHTML = loading ? `<span class="spinner"></span>${msg}` : msg;
+}
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+init();
+</script>
+</body>
+</html>

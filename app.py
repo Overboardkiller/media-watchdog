@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, send_from_directory
-import json, os, requests as req_lib, secrets, time, threading, shutil
+import json, os, requests as req_lib, secrets, time, threading, shutil, copy
 from functools import wraps
 from datetime import datetime
 from cryptography.fernet import Fernet
@@ -480,15 +480,25 @@ def build_cache():
             tid = r.get('media', {}).get('tmdbId')
             if not tid or (mt, tid) in title_cache:
                 continue
+            # Pre-populate fallback title from Seerr media object (available without TMDB)
+            seerr_media_obj = next((r2.get('media',{}) for r2 in requests_list
+                                    if r2.get('media',{}).get('tmdbId') == tid
+                                    and r2.get('type','') == mt), {})
+            seerr_fallback = (seerr_media_obj.get('title') or
+                              seerr_media_obj.get('originalTitle') or
+                              seerr_media_obj.get('name') or
+                              seerr_media_obj.get('originalName') or '')
             try:
                 endpoint = f"/api/v1/{'movie' if mt == 'movie' else 'tv'}/{tid}"
                 detail   = overseerr_get(cfg['overseerr_url'], cfg['overseerr_key'], endpoint)
-                t     = detail.get('title') or detail.get('name') or detail.get('originalTitle') or detail.get('originalName') or 'Unknown'
+                t     = detail.get('title') or detail.get('name') or detail.get('originalTitle') or detail.get('originalName') or seerr_fallback or 'Unknown'
                 y     = (detail.get('releaseDate') or detail.get('firstAirDate') or '')[:4]
                 score = detail.get('voteAverage')
                 title_cache[(mt, tid)] = {'title': t, 'year': y, 'score': score}
             except:
-                title_cache[(mt, tid)] = {'title': 'Unknown', 'year': '', 'score': None}
+                # Fall back to Seerr media title if TMDB lookup fails — avoid 'Unknown' if possible
+                fallback_title = seerr_fallback if seerr_fallback and seerr_fallback.lower() != 'unknown' else 'Unknown'
+                title_cache[(mt, tid)] = {'title': fallback_title, 'year': '', 'score': None}
 
         threshold_ms = 3 * 30 * 24 * 60 * 60
         now          = time.time()
@@ -647,6 +657,26 @@ def build_cache():
         for svc in seerr_services:
             inst = inst_map.get(svc['seerr_service_id'], {})
             svc['custom_name'] = inst.get('custom_name', '')
+
+        # Re-sort seerr_services to match arr_instances order (preserves user-defined tab order)
+        arr_order = [i.get('seerr_service_id', '') for i in data['config'].get('arr_instances', [])]
+        # Also build composite ID lookup for old-style bare IDs
+        arr_order_composite = []
+        for i in data['config'].get('arr_instances', []):
+            sid = i.get('seerr_service_id', '')
+            itype = i.get('type', '')
+            if ':' not in sid and itype:
+                arr_order_composite.append(f"{itype}:{sid}")
+            else:
+                arr_order_composite.append(sid)
+        if arr_order_composite:
+            def sort_key(svc):
+                sid = svc.get('seerr_service_id', '')
+                try:
+                    return arr_order_composite.index(sid)
+                except ValueError:
+                    return len(arr_order_composite)  # new instances go to end
+            seerr_services.sort(key=sort_key)
 
         # Apply any persisted requester overrides on top of fresh results
         overrides = data.get('requester_overrides', {})
@@ -818,18 +848,35 @@ def report():
     results  = cache.get('results', [])
     libraries= cache.get('libraries', [])
 
-    seerr_services = cache.get('seerr_services', [])
+    seerr_services = copy.deepcopy(cache.get('seerr_services', []))
+    # Annotate seerr_services with has_arr_key so frontend can show delete confirmation correctly
+    cfg = decrypt_config(data.get('config', {}))
+    decrypted_instances = get_arr_instances(cfg)
+    inst_key_map = {}
+    for inst in decrypted_instances:
+        sid = inst.get('seerr_service_id', '')
+        itype = inst.get('type', '')
+        inst_key_map[sid] = bool(inst.get('key', ''))
+        if ':' not in sid and itype:
+            inst_key_map[f"{itype}:{sid}"] = bool(inst.get('key', ''))
+    for svc in seerr_services:
+        svc['has_arr_key'] = inst_key_map.get(svc.get('seerr_service_id', ''), False)
+
+    # Include masked arr_instances so frontend can derive tab order/names from single source
+    masked_instances = mask_arr_instances(data['config'].get('arr_instances', []))
 
     if not results and not _cache_building:
         build_cache_async()
         return jsonify({'building': True, 'results': [], 'libraries': [],
                         'seerr_services': seerr_services,
+                        'arr_instances': masked_instances,
                         'is_admin': me['is_admin'], 'username': me['username'],
                         'built_at': None, 'cache_interval_hours': data['config'].get('cache_interval_hours', 24)})
 
     if _cache_building:
         return jsonify({'building': True, 'results': results, 'libraries': libraries,
                         'seerr_services': seerr_services,
+                        'arr_instances': masked_instances,
                         'is_admin': me['is_admin'], 'username': me['username'],
                         'built_at': built_at, 'cache_interval_hours': data['config'].get('cache_interval_hours', 24)})
 
@@ -857,6 +904,7 @@ def report():
 
     return jsonify({'building': False, 'results': filtered, 'libraries': libraries,
                     'seerr_services': seerr_services,
+                    'arr_instances': masked_instances,
                     'is_admin': me['is_admin'], 'username': me['username'],
                     'built_at': built_at, 'cache_interval_hours': data['config'].get('cache_interval_hours', 24)})
 
