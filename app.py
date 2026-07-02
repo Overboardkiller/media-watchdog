@@ -122,7 +122,10 @@ def load_lockouts():
 # Atomic JSON write — prevents readers ever seeing a half-written file
 def atomic_write_json(path, obj, **dump_kwargs):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp"
+    # Unique per-process temp filename — with multiple gunicorn workers, a
+    # shared "<path>.tmp" name lets two processes write/replace the same
+    # temp file concurrently, corrupting it before the rename even happens.
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, 'w') as f:
         json.dump(obj, f, **dump_kwargs)
     os.replace(tmp, path)
