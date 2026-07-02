@@ -620,10 +620,11 @@ function actionButtons(r, isAdmin) {
     </div>` : '';
 
   if (flagged) {
-    const noteTitle = flag_note ? ` title="Note: ${esc(flag_note)} — by ${esc(flag_by)}"` : ` title="Flagged by ${esc(flag_by)}"`;
+    const noteInfo = flag_note ? `Note: ${esc(flag_note)} — by ${esc(flag_by)}` : `Flagged by ${esc(flag_by)}`;
+    const noteTitle = ` title="${noteInfo}"`;
     if (isAdmin) {
       return `<div class="flex items-center gap-1.5 justify-end flex-wrap">
-        <span${noteTitle} class="px-2 py-1 text-xs bg-red-950 border border-red-800 text-red-400 rounded-xl whitespace-nowrap">🚩 ${esc(flag_by)}</span>
+        <button title="${noteInfo} — click to unflag" onclick="toggleFlag('${req_id}',false)" class="px-2 py-1 text-xs bg-red-950 border border-red-800 text-red-400 rounded-xl whitespace-nowrap hover:bg-red-900 hover:border-red-600 transition-colors cursor-pointer">🚩 ${esc(flag_by)}</button>
         <button onclick="doDelete('${req_id}')" class="px-3 py-2 text-xs bg-red-600 hover:bg-red-700 text-white rounded-2xl transition-colors font-medium whitespace-nowrap">Delete</button>
         <button onclick="doKeep('${req_id}')" class="px-3 py-2 text-xs bg-emerald-700 hover:bg-emerald-600 text-white rounded-2xl transition-colors font-medium whitespace-nowrap">Keep</button>
       </div>`;
