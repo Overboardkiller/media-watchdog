@@ -1,7 +1,8 @@
 from flask import Flask, request, jsonify, send_from_directory
 import json, os, requests as req_lib, secrets, time, threading, shutil, copy
 from functools import wraps
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from cryptography.fernet import Fernet
 import base64, hashlib
 
@@ -76,7 +77,7 @@ _log_lock = threading.Lock()
 def write_log(event_type, detail, username=None, ip=None):
     entry = {
         'ts':       time.time(),
-        'dt':       datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'),
+        'dt':       datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
         'type':     event_type,
         'detail':   detail,
         'username': username,
@@ -118,17 +119,27 @@ def load_lockouts():
     except Exception:
         return {}
 
-def save_lockouts(data):
-    os.makedirs(os.path.dirname(LOCKOUT_FILE), exist_ok=True)
-    tmp = LOCKOUT_FILE + '.tmp'
+# Atomic JSON write — prevents readers ever seeing a half-written file
+def atomic_write_json(path, obj, **dump_kwargs):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp"
     with open(tmp, 'w') as f:
-        json.dump(data, f)
-    os.replace(tmp, LOCKOUT_FILE)
+        json.dump(obj, f, **dump_kwargs)
+    os.replace(tmp, path)
+
+def save_lockouts(data):
+    atomic_write_json(LOCKOUT_FILE, data)
+
+# Only trust X-Forwarded-For when explicitly running behind a reverse proxy
+# (set TRUST_PROXY=1). Otherwise a client could spoof the header and bypass
+# login rate limiting entirely.
+TRUST_PROXY = os.environ.get('TRUST_PROXY', '').strip().lower() in ('1', 'true', 'yes')
 
 def get_client_ip():
-    xff = request.headers.get('X-Forwarded-For', '')
-    if xff:
-        return xff.split(',')[0].strip()
+    if TRUST_PROXY:
+        xff = request.headers.get('X-Forwarded-For', '')
+        if xff:
+            return xff.split(',')[0].strip()
     return request.remote_addr or 'unknown'
 
 def is_rate_limited(ip):
@@ -174,6 +185,11 @@ def is_setup_rate_limited(ip):
         return False
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
+# Guards every load→mutate→save cycle on watchdog.json. Without this, the
+# cache-builder thread and request handlers can interleave and silently drop
+# writes (e.g. a flag set while a cache build is finishing).
+_data_lock = threading.RLock()
+
 def load_data():
     if not os.path.exists(DATA_FILE):
         return {
@@ -209,13 +225,20 @@ def load_data():
     return d
 
 def save_data(data):
-    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-    tmp = DATA_FILE + '.tmp'
-    with open(tmp, 'w') as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, DATA_FILE)  # atomic on Linux — no partial writes
+    atomic_write_json(DATA_FILE, data, indent=2)
+
+@contextmanager
+def data_transaction():
+    """Locked read-modify-write on watchdog.json. Saves on clean exit."""
+    with _data_lock:
+        data = load_data()
+        yield data
+        save_data(data)
 
 # ── Session helpers ───────────────────────────────────────────────────────────
+_session_lock  = threading.RLock()
+SESSION_MAX_AGE = 86400 * 7
+
 def load_sessions():
     if not os.path.exists(SESSION_FILE):
         return {}
@@ -226,11 +249,11 @@ def load_sessions():
         return {}
 
 def save_sessions(sessions):
-    os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
-    tmp = SESSION_FILE + '.tmp'
-    with open(tmp, 'w') as f:
-        json.dump(sessions, f)
-    os.replace(tmp, SESSION_FILE)
+    # Prune expired sessions so the file doesn't grow forever
+    now = time.time()
+    live = {t: s for t, s in sessions.items()
+            if now - s.get('created_at', 0) <= SESSION_MAX_AGE}
+    atomic_write_json(SESSION_FILE, live)
 
 def make_token():
     return secrets.token_hex(32)
@@ -238,15 +261,33 @@ def make_token():
 def get_session(token):
     if not token:
         return None
-    sessions = load_sessions()
-    s = sessions.get(token)
-    if not s:
-        return None
-    if time.time() - s['created_at'] > 86400 * 7:
+    with _session_lock:
+        sessions = load_sessions()
+        s = sessions.get(token)
+        if not s:
+            return None
+        if time.time() - s['created_at'] > SESSION_MAX_AGE:
+            sessions.pop(token, None)
+            save_sessions(sessions)
+            return None
+        return s
+
+def create_session(user_id, username, is_admin):
+    token = make_token()
+    with _session_lock:
+        sessions = load_sessions()
+        sessions[token] = {
+            'emby_user_id': user_id, 'username': username,
+            'is_admin': is_admin, 'created_at': time.time()
+        }
+        save_sessions(sessions)
+    return token
+
+def destroy_session(token):
+    with _session_lock:
+        sessions = load_sessions()
         sessions.pop(token, None)
         save_sessions(sessions)
-        return None
-    return s
 
 def require_auth(f):
     @wraps(f)
@@ -293,7 +334,7 @@ def emby_get_users(emby_url, emby_key):
     try:
         resp = req_lib.get(f"{emby_url.rstrip('/')}/Users", params={"api_key": emby_key}, timeout=10)
         return resp.json() if resp.status_code == 200 else []
-    except:
+    except Exception:
         return []
 
 def emby_get_libraries(emby_url, emby_key):
@@ -305,7 +346,7 @@ def emby_get_libraries(emby_url, emby_key):
         )
         if resp.status_code == 200:
             return [{'id': lib.get('ItemId',''), 'name': lib.get('Name',''), 'type': lib.get('CollectionType','')} for lib in resp.json()]
-    except:
+    except Exception:
         pass
     return []
 
@@ -319,8 +360,14 @@ def fetch_all_requests(overseerr_url, overseerr_key):
     while True:
         data = overseerr_get(overseerr_url, overseerr_key,
                              f"/api/v1/request?take=100&skip={(page-1)*100}&sort=added&filter=all")
-        results.extend(data.get('results', []))
-        if len(results) >= data['pageInfo']['results']:
+        batch = data.get('results', [])
+        results.extend(batch)
+        # Guard: if a page comes back empty, stop — pageInfo.results can
+        # overstate the total (e.g. requests deleted mid-pagination), which
+        # would otherwise loop forever.
+        if not batch:
+            break
+        if len(results) >= data.get('pageInfo', {}).get('results', 0):
             break
         page += 1
     return results
@@ -358,15 +405,6 @@ def _build_arr_url(svc):
         scheme = 'https' if ssl else 'http'
         return f"{scheme}://{hostname}:{port}" if port else f"{scheme}://{hostname}"
     return ''
-    results, page = [], 1
-    while True:
-        data = overseerr_get(overseerr_url, overseerr_key,
-                             f"/api/v1/request?take=100&skip={(page-1)*100}&sort=added&filter=all")
-        results.extend(data.get('results', []))
-        if len(results) >= data['pageInfo']['results']:
-            break
-        page += 1
-    return results
 
 # ── Playback Reporting DB ─────────────────────────────────────────────────────
 def get_playback_db_path():
@@ -383,7 +421,7 @@ def get_playback_db_path():
                 if f == 'playback_reporting.db':
                     return os.path.join(root, f)
             dirs[:] = [d for d in dirs if root == EMBY_APPDATA]
-    except:
+    except Exception:
         pass
     return None
 
@@ -399,7 +437,7 @@ def get_series_episodes(emby_url, emby_key, series_id):
         if resp.status_code == 200:
             items = resp.json().get('Items', [])
             return len(items), [item['Id'] for item in items]
-    except:
+    except Exception:
         pass
     return 0, []
 
@@ -437,7 +475,7 @@ def build_cache():
                 )
                 if resp.status_code == 200:
                     lib_item_sets[lib['name']] = {item['Id'] for item in resp.json().get('Items', [])}
-            except:
+            except Exception:
                 lib_item_sets[lib['name']] = set()
 
         requests_list = fetch_all_requests(cfg['overseerr_url'], cfg['overseerr_key'])
@@ -501,12 +539,12 @@ def build_cache():
                 y     = (detail.get('releaseDate') or detail.get('firstAirDate') or '')[:4]
                 score = detail.get('voteAverage')
                 title_cache[(mt, tid)] = {'title': t, 'year': y, 'score': score}
-            except:
+            except Exception:
                 # Fall back to Seerr media title if TMDB lookup fails — avoid 'Unknown' if possible
                 fallback_title = seerr_fallback if seerr_fallback and seerr_fallback.lower() != 'unknown' else 'Unknown'
                 title_cache[(mt, tid)] = {'title': fallback_title, 'year': '', 'score': None}
 
-        threshold_ms = 3 * 30 * 24 * 60 * 60
+        threshold_seconds = 3 * 30 * 24 * 60 * 60
         now          = time.time()
 
         results = []
@@ -603,7 +641,7 @@ def build_cache():
                 status = 'notemby'
             elif not any_watched:
                 status = 'unwatched'
-            elif last_played and (now - last_played) > threshold_ms:
+            elif last_played and (now - last_played) > threshold_seconds:
                 status = 'stale'
             else:
                 status = 'active'
@@ -650,55 +688,68 @@ def build_cache():
                 'overseerr_link':    f"{link_base}/{os_path}/{tmdb_id}"
             })
 
-        data = load_data()
-        # Merge custom_name from configured arr_instances into seerr_services
-        # Support both composite keys (radarr:0) and old-style bare IDs (0) during migration
-        inst_map = {}
-        for i in data['config'].get('arr_instances', []):
-            sid = i.get('seerr_service_id', '')
-            inst_map[sid] = i
-            itype = i.get('type', '')
-            if itype and sid and ':' not in sid:
-                inst_map[f"{itype}:{sid}"] = i
-        for svc in seerr_services:
-            inst = inst_map.get(svc['seerr_service_id'], {})
-            svc['custom_name'] = inst.get('custom_name', '')
+        # Final merge under the data lock: everything above was slow network
+        # work against a snapshot; re-load fresh data here so flags/protections
+        # set during the build are neither lost nor stale in the cache.
+        with data_transaction() as data:
+            # Refresh flag/protect/season annotations from fresh data
+            for r in results:
+                rid       = r['req_id']
+                flag      = data['flags'].get(rid)
+                protected = data['protected'].get(rid)
+                r['flagged']      = bool(flag)
+                r['flag_note']    = flag.get('note', '') if flag else ''
+                r['flag_by']      = flag.get('flagged_by', '') if flag else ''
+                r['protected']    = bool(protected)
+                r['protected_by'] = protected.get('protected_by', '') if protected else ''
+                r['season_flags'] = data.get('season_flags', {}).get(rid, [])
 
-        # Re-sort seerr_services to match arr_instances order (preserves user-defined tab order)
-        arr_order = [i.get('seerr_service_id', '') for i in data['config'].get('arr_instances', [])]
-        # Also build composite ID lookup for old-style bare IDs
-        arr_order_composite = []
-        for i in data['config'].get('arr_instances', []):
-            sid = i.get('seerr_service_id', '')
-            itype = i.get('type', '')
-            if ':' not in sid and itype:
-                arr_order_composite.append(f"{itype}:{sid}")
-            else:
-                arr_order_composite.append(sid)
-        if arr_order_composite:
-            def sort_key(svc):
-                sid = svc.get('seerr_service_id', '')
-                try:
-                    return arr_order_composite.index(sid)
-                except ValueError:
-                    return len(arr_order_composite)  # new instances go to end
-            seerr_services.sort(key=sort_key)
+            # Merge custom_name from configured arr_instances into seerr_services
+            # Support both composite keys (radarr:0) and old-style bare IDs (0) during migration
+            inst_map = {}
+            for i in data['config'].get('arr_instances', []):
+                sid = i.get('seerr_service_id', '')
+                inst_map[sid] = i
+                itype = i.get('type', '')
+                if itype and sid and ':' not in sid:
+                    inst_map[f"{itype}:{sid}"] = i
+            for svc in seerr_services:
+                inst = inst_map.get(svc['seerr_service_id'], {})
+                svc['custom_name'] = inst.get('custom_name', '')
 
-        # Apply any persisted requester overrides on top of fresh results
-        overrides = data.get('requester_overrides', {})
-        for r in results:
-            if r['req_id'] in overrides:
-                ov = overrides[r['req_id']]
-                r['requested_by']      = ov.get('username', r['requested_by'])
-                r['requester_emby_id'] = ov.get('emby_id', r.get('requester_emby_id'))
+            # Re-sort seerr_services to match arr_instances order (preserves user-defined tab order)
+            # Build composite ID lookup for old-style bare IDs
+            arr_order_composite = []
+            for i in data['config'].get('arr_instances', []):
+                sid = i.get('seerr_service_id', '')
+                itype = i.get('type', '')
+                if ':' not in sid and itype:
+                    arr_order_composite.append(f"{itype}:{sid}")
+                else:
+                    arr_order_composite.append(sid)
+            if arr_order_composite:
+                def sort_key(svc):
+                    sid = svc.get('seerr_service_id', '')
+                    try:
+                        return arr_order_composite.index(sid)
+                    except ValueError:
+                        return len(arr_order_composite)  # new instances go to end
+                seerr_services.sort(key=sort_key)
 
-        data['cache'] = {
-            'built_at':       time.time(),
-            'results':        results,
-            'libraries':      [l['name'] for l in libraries],
-            'seerr_services': seerr_services
-        }
-        save_data(data)
+            # Apply any persisted requester overrides on top of fresh results
+            overrides = data.get('requester_overrides', {})
+            for r in results:
+                if r['req_id'] in overrides:
+                    ov = overrides[r['req_id']]
+                    r['requested_by']      = ov.get('username', r['requested_by'])
+                    r['requester_emby_id'] = ov.get('emby_id', r.get('requester_emby_id'))
+
+            data['cache'] = {
+                'built_at':       time.time(),
+                'results':        results,
+                'libraries':      [l['name'] for l in libraries],
+                'seerr_services': seerr_services
+            }
         write_log('cache', f'Cache build complete — {len(results)} items, {len(seerr_services)} Arr services')
         print(f"[cache] Cache built — {len(results)} items")
 
@@ -769,28 +820,24 @@ def setup():
     except Exception as e:
         return jsonify({'error': f'Overseerr connection failed: {e}'}), 400
 
-    user  = auth.get('User', {})
-    token = make_token()
+    user = auth.get('User', {})
 
-    data['setup_complete'] = True
-    data['config'] = encrypt_config({
-        'emby_url': emby_url,
-        'emby_key': emby_key,
-        'overseerr_url': overseerr_url,
-        'overseerr_key': overseerr_key,
-        'overseerr_public_url': '',
-        'cache_interval_hours': 24
-    })
-    data['admin_emby_id']  = user['Id']
-    data['admin_username'] = user['Name']
-    save_data(data)
+    with data_transaction() as data:
+        if data['setup_complete']:
+            return jsonify({'error': 'Already set up'}), 400
+        data['setup_complete'] = True
+        data['config'] = encrypt_config({
+            'emby_url': emby_url,
+            'emby_key': emby_key,
+            'overseerr_url': overseerr_url,
+            'overseerr_key': overseerr_key,
+            'overseerr_public_url': '',
+            'cache_interval_hours': 24
+        })
+        data['admin_emby_id']  = user['Id']
+        data['admin_username'] = user['Name']
 
-    sessions = load_sessions()
-    sessions[token] = {
-        'emby_user_id': user['Id'], 'username': user['Name'],
-        'is_admin': True, 'created_at': time.time()
-    }
-    save_sessions(sessions)
+    token = create_session(user['Id'], user['Name'], True)
 
     write_log('setup', f'Initial setup completed by {user["Name"]}', username=user['Name'], ip=ip)
     build_cache_async()
@@ -821,14 +868,7 @@ def login():
     clear_login_attempts(ip)
     user     = auth.get('User', {})
     is_admin = user['Id'] == data['admin_emby_id']
-    token    = make_token()
-
-    sessions = load_sessions()
-    sessions[token] = {
-        'emby_user_id': user['Id'], 'username': user['Name'],
-        'is_admin': is_admin, 'created_at': time.time()
-    }
-    save_sessions(sessions)
+    token    = create_session(user['Id'], user['Name'], is_admin)
 
     write_log('login', f'Successful login{"  [admin]" if is_admin else ""}', username=user['Name'], ip=ip)
     return jsonify({'token': token, 'username': user['Name'], 'is_admin': is_admin})
@@ -838,9 +878,7 @@ def login():
 def logout():
     token = request.headers.get('X-Token')
     username = request.session.get('username')
-    sessions = load_sessions()
-    sessions.pop(token, None)
-    save_sessions(sessions)
+    destroy_session(token)
     write_log('login', 'Logged out', username=username, ip=get_client_ip())
     return jsonify({'ok': True})
 
@@ -937,57 +975,55 @@ def cache_status():
 @app.route('/api/flag/<req_id>', methods=['POST'])
 @require_auth
 def set_flag(req_id):
-    data    = load_data()
     body    = request.json or {}
     flagged = body.get('flagged', False)
     note    = body.get('note', '')
     username = request.session['username']
     ip       = get_client_ip()
 
-    # Block flagging protected items for non-admins
-    if flagged and not request.session.get('is_admin'):
-        if data['protected'].get(req_id):
-            return jsonify({'error': 'This item has been protected by an admin.'}), 403
+    with data_transaction() as data:
+        # Block flagging protected items for non-admins
+        if flagged and not request.session.get('is_admin'):
+            if data['protected'].get(req_id):
+                return jsonify({'error': 'This item has been protected by an admin.'}), 403
 
-    # Find title for logging
-    title = next((r['title'] for r in data['cache'].get('results', []) if r['req_id'] == req_id), req_id)
+        # Find title for logging
+        title = next((r['title'] for r in data['cache'].get('results', []) if r['req_id'] == req_id), req_id)
 
-    if flagged:
-        data['flags'][req_id] = {
-            'flagged_by': username,
-            'note': note, 'flagged_at': time.time()
-        }
-        write_log('flag', f'Flagged for deletion: "{title}"{f" — note: {note}" if note else ""}', username=username, ip=ip)
-    else:
-        data['flags'].pop(req_id, None)
-        write_log('flag', f'Flag removed: "{title}"', username=username, ip=ip)
+        if flagged:
+            data['flags'][req_id] = {
+                'flagged_by': username,
+                'note': note, 'flagged_at': time.time()
+            }
+            write_log('flag', f'Flagged for deletion: "{title}"{f" — note: {note}" if note else ""}', username=username, ip=ip)
+        else:
+            data['flags'].pop(req_id, None)
+            write_log('flag', f'Flag removed: "{title}"', username=username, ip=ip)
 
-    save_data(data)
     return jsonify({'ok': True})
 
 @app.route('/api/protect/<req_id>', methods=['POST'])
 @require_admin
 def set_protect(req_id):
-    data      = load_data()
     body      = request.json or {}
     protected = body.get('protected', False)
     username  = request.session['username']
     ip        = get_client_ip()
 
-    title = next((r['title'] for r in data['cache'].get('results', []) if r['req_id'] == req_id), req_id)
+    with data_transaction() as data:
+        title = next((r['title'] for r in data['cache'].get('results', []) if r['req_id'] == req_id), req_id)
 
-    if protected:
-        data['protected'][req_id] = {
-            'protected_by': username,
-            'protected_at': time.time()
-        }
-        data['flags'].pop(req_id, None)
-        write_log('admin', f'Protected (keep): "{title}"', username=username, ip=ip)
-    else:
-        data['protected'].pop(req_id, None)
-        write_log('admin', f'Protection removed: "{title}"', username=username, ip=ip)
+        if protected:
+            data['protected'][req_id] = {
+                'protected_by': username,
+                'protected_at': time.time()
+            }
+            data['flags'].pop(req_id, None)
+            write_log('admin', f'Protected (keep): "{title}"', username=username, ip=ip)
+        else:
+            data['protected'].pop(req_id, None)
+            write_log('admin', f'Protection removed: "{title}"', username=username, ip=ip)
 
-    save_data(data)
     return jsonify({'ok': True})
 
 @app.route('/api/permissions', methods=['GET'])
@@ -1002,14 +1038,15 @@ def get_permissions():
 @app.route('/api/permissions', methods=['POST'])
 @require_admin
 def set_permissions():
-    data     = load_data()
     body     = request.json or {}
     username = request.session['username']
     ip       = get_client_ip()
     user_id  = body.get('user_id')
     can_see  = body.get('can_see', [])
-    data['permissions'][user_id] = can_see
-    save_data(data)
+    if not user_id or not isinstance(can_see, list):
+        return jsonify({'error': 'user_id and can_see list required'}), 400
+    with data_transaction() as data:
+        data['permissions'][user_id] = can_see
     write_log('permissions', f'Permissions updated for user ID {user_id} — can see: {can_see}', username=username, ip=ip)
     return jsonify({'ok': True})
 
@@ -1022,25 +1059,24 @@ def get_config():
 @app.route('/api/config', methods=['POST'])
 @require_admin
 def update_config():
-    data     = load_data()
     body     = request.json or {}
     username = request.session['username']
     ip       = get_client_ip()
-    cfg      = decrypt_config(data['config'])
     changed  = []
-    for key in ['emby_url', 'emby_key', 'overseerr_url', 'overseerr_key', 'overseerr_public_url', 'cache_interval_hours']:
-        if key not in body:
-            continue
-        val = body[key]
-        # Skip masked placeholder and encrypted strings (starts with gAAAAA = Fernet token)
-        if val == '••••••••':
-            continue
-        if isinstance(val, str) and val.startswith('gAAAAA'):
-            continue
-        cfg[key] = val
-        changed.append(key if 'key' not in key else f'{key} (re-saved)')
-    data['config'] = encrypt_config(cfg)
-    save_data(data)
+    with data_transaction() as data:
+        cfg = decrypt_config(data['config'])
+        for key in ['emby_url', 'emby_key', 'overseerr_url', 'overseerr_key', 'overseerr_public_url', 'cache_interval_hours']:
+            if key not in body:
+                continue
+            val = body[key]
+            # Skip masked placeholder and encrypted strings (starts with gAAAAA = Fernet token)
+            if val == '••••••••':
+                continue
+            if isinstance(val, str) and val.startswith('gAAAAA'):
+                continue
+            cfg[key] = val
+            changed.append(key if 'key' not in key else f'{key} (re-saved)')
+        data['config'] = encrypt_config(cfg)
     if changed:
         write_log('admin', f'Config updated — fields changed: {", ".join(changed)}', username=username, ip=ip)
     return jsonify({'ok': True})
@@ -1195,19 +1231,18 @@ def get_arr_config():
 @app.route('/api/config/arr', methods=['POST'])
 @require_admin
 def update_arr_config():
-    data      = load_data()
     body      = request.json or {}
     username  = request.session['username']
     ip        = get_client_ip()
     instances = body.get('arr_instances', [])
-    # Preserve existing encrypted keys for instances that sent back ••••••••
-    existing  = {i['id']: i for i in data['config'].get('arr_instances', [])}
-    for inst in instances:
-        iid = inst.get('id', '')
-        if inst.get('key') == '••••••••' and iid in existing:
-            inst['key'] = decrypt_value(existing[iid].get('key', ''))
-    data['config']['arr_instances'] = encrypt_arr_instances(instances)
-    save_data(data)
+    with data_transaction() as data:
+        # Preserve existing encrypted keys for instances that sent back ••••••••
+        existing = {i['id']: i for i in data['config'].get('arr_instances', [])}
+        for inst in instances:
+            iid = inst.get('id', '')
+            if inst.get('key') == '••••••••' and iid in existing:
+                inst['key'] = decrypt_value(existing[iid].get('key', ''))
+        data['config']['arr_instances'] = encrypt_arr_instances(instances)
     write_log('admin', f'Arr instances updated — {len(instances)} instance(s) configured', username=username, ip=ip)
     return jsonify({'ok': True})
 
@@ -1298,9 +1333,9 @@ def delete_item(req_id):
                     break
 
     if not arr_hit and not arr_instances:
-        warnings.append('No Arr instances configured — cannot delete from Radarr/Sonarr. Configure them in Settings first.')
+        warnings.append('No Arr instances configured — cannot delete from Radarr/Sonarr. Configure them in Settings first. Media files (if any) will remain on disk.')
     elif not arr_hit:
-        warnings.append(f'Could not find this item in any configured {"Radarr" if mtype=="Movie" else "Sonarr"} instance.')
+        warnings.append(f'Could not find this item in any configured {"Radarr" if mtype=="Movie" else "Sonarr"} instance — media files (if any) will remain on disk untracked.')
 
     # ── Step 3: Delete from Arr ───────────────────────────────────────────────
     if arr_hit and arr_item_id:
@@ -1326,7 +1361,6 @@ def delete_item(req_id):
     # so the admin can fix the Arr config and retry.
     arr_attempted  = bool(arr_hit)
     arr_succeeded  = arr_attempted and not any('Failed to delete' in e for e in errors)
-    no_arr_needed  = not arr_attempted and not arr_instances  # no instances configured at all
 
     if errors and arr_attempted and not arr_succeeded:
         # Arr deletion failed — abort everything, don't touch Seerr or cache
@@ -1342,10 +1376,12 @@ def delete_item(req_id):
         })
 
     # Safe to clean up Seerr and cache
-    data['flags'].pop(req_id, None)
-    data['protected'].pop(req_id, None)
-    data['cache']['results'] = [r for r in data['cache'].get('results', []) if r['req_id'] != req_id]
-    save_data(data)
+    with data_transaction() as data:
+        data['flags'].pop(req_id, None)
+        data['protected'].pop(req_id, None)
+        data.get('season_flags', {}).pop(req_id, None)
+        data.get('requester_overrides', {}).pop(req_id, None)
+        data['cache']['results'] = [r for r in data['cache'].get('results', []) if r['req_id'] != req_id]
 
     summary = f'Deleted "{title}" — steps: {"; ".join(steps) if steps else "none completed"}'
     if warnings:
@@ -1382,47 +1418,48 @@ def sync_arr_from_seerr():
     # Build lookup of synced services by composite ID
     synced_map = {s['seerr_service_id']: s for s in synced_services}
 
-    # Walk existing instances in their current order — update URL/name but preserve custom_name, key, position
-    current = data['config'].get('arr_instances', [])
-    updated = []
-    seen_ids = set()
-    for inst in current:
-        sid = inst.get('seerr_service_id', '')
-        itype = inst.get('type', '')
-        # Match by composite ID or migrate from old bare ID
-        composite = sid if ':' in sid else f"{itype}:{sid}"
-        svc = synced_map.get(composite)
-        if svc:
-            updated.append({
-                'id':               inst.get('id') or secrets.token_hex(4),
-                'seerr_service_id': composite,   # migrate to composite if needed
-                'name':             svc['name'],
-                'custom_name':      inst.get('custom_name', ''),  # never overwrite
-                'type':             svc['type'],
-                'url':              svc['url'],   # update URL from Seerr
-                'key':              inst.get('key', ''),           # preserve key
-                'is4k':             svc.get('is4k', False)
-            })
-            seen_ids.add(composite)
-        else:
-            updated.append(inst)  # keep unrecognised instances untouched
+    with data_transaction() as data:
+        # Walk existing instances in their current order — update URL/name but preserve custom_name, key, position
+        current = data['config'].get('arr_instances', [])
+        updated = []
+        seen_ids = set()
+        for inst in current:
+            sid = inst.get('seerr_service_id', '')
+            itype = inst.get('type', '')
+            # Match by composite ID or migrate from old bare ID
+            composite = sid if ':' in sid else f"{itype}:{sid}"
+            svc = synced_map.get(composite)
+            if svc:
+                updated.append({
+                    'id':               inst.get('id') or secrets.token_hex(4),
+                    'seerr_service_id': composite,   # migrate to composite if needed
+                    'name':             svc['name'],
+                    'custom_name':      inst.get('custom_name', ''),  # never overwrite
+                    'type':             svc['type'],
+                    'url':              svc['url'],   # update URL from Seerr
+                    'key':              inst.get('key', ''),           # preserve key
+                    'is4k':             svc.get('is4k', False)
+                })
+                seen_ids.add(composite)
+            else:
+                updated.append(inst)  # keep unrecognised instances untouched
 
-    # Append genuinely new instances not already in the list
-    for svc in synced_services:
-        if svc['seerr_service_id'] not in seen_ids:
-            updated.append({
-                'id':               secrets.token_hex(4),
-                'seerr_service_id': svc['seerr_service_id'],
-                'name':             svc['name'],
-                'custom_name':      '',
-                'type':             svc['type'],
-                'url':              svc['url'],
-                'key':              '',
-                'is4k':             svc.get('is4k', False)
-            })
+        # Append genuinely new instances not already in the list
+        for svc in synced_services:
+            if svc['seerr_service_id'] not in seen_ids:
+                updated.append({
+                    'id':               secrets.token_hex(4),
+                    'seerr_service_id': svc['seerr_service_id'],
+                    'name':             svc['name'],
+                    'custom_name':      '',
+                    'type':             svc['type'],
+                    'url':              svc['url'],
+                    'key':              '',
+                    'is4k':             svc.get('is4k', False)
+                })
 
-    data['config']['arr_instances'] = updated
-    save_data(data)
+        data['config']['arr_instances'] = updated
+
     write_log('admin', f'Arr instances synced from Seerr — {len(updated)} instance(s)', username=username, ip=ip)
     return jsonify({'ok': True, 'arr_instances': mask_arr_instances(updated), 'count': len(updated)})
 
@@ -1446,18 +1483,26 @@ def get_seasons(req_id):
     tmdb_id      = cache_item.get('tmdb_id', '')
     tvdb_id      = cache_item.get('tvdb_id', '')
 
-    # Find in Emby
+    # Find in Emby — use AnyProviderIdEquals so the server does the matching.
+    # (Previously this fetched with Limit:1 and matched client-side, which only
+    # ever saw one arbitrary series from the whole library and almost always missed.)
+    provider_filters = []
+    if tmdb_id:
+        provider_filters.append(f'tmdb.{tmdb_id}')
+    if tvdb_id:
+        provider_filters.append(f'tvdb.{tvdb_id}')
     try:
         er = req_lib.get(
             f"{cfg['emby_url']}/Items",
             params={'Recursive': 'true', 'IncludeItemTypes': 'Series',
-                    'Fields': 'ProviderIds', 'Limit': 1,
+                    'AnyProviderIdEquals': ','.join(provider_filters),
+                    'Fields': 'ProviderIds', 'Limit': 5,
                     'api_key': cfg['emby_key']},
             timeout=10
         )
         for item in er.json().get('Items', []):
             p = item.get('ProviderIds', {})
-            if str(p.get('Tmdb', '')) == tmdb_id or str(p.get('Tvdb', '')) == tvdb_id:
+            if str(p.get('Tmdb', p.get('tmdb', ''))) == tmdb_id or str(p.get('Tvdb', p.get('tvdb', ''))) == tvdb_id:
                 emby_item_id = item['Id']
                 break
     except Exception as e:
@@ -1517,33 +1562,32 @@ def get_seasons(req_id):
 @require_auth
 def flag_seasons(req_id):
     """Flag specific seasons of a TV show for deletion."""
-    data     = load_data()
     body     = request.json or {}
     username = request.session['username']
     ip       = get_client_ip()
     seasons  = body.get('seasons', [])  # list of season numbers
 
-    cache_item = next((r for r in data['cache'].get('results', []) if r['req_id'] == req_id), None)
-    title      = cache_item.get('title', req_id) if cache_item else req_id
+    with data_transaction() as data:
+        cache_item = next((r for r in data['cache'].get('results', []) if r['req_id'] == req_id), None)
+        title      = cache_item.get('title', req_id) if cache_item else req_id
 
-    # Block if protected
-    if not request.session.get('is_admin') and data['protected'].get(req_id):
-        return jsonify({'error': 'This item has been protected by an admin.'}), 403
+        # Block if protected
+        if not request.session.get('is_admin') and data['protected'].get(req_id):
+            return jsonify({'error': 'This item has been protected by an admin.'}), 403
 
-    if seasons:
-        data['season_flags'][req_id] = seasons
-        write_log('flag', f'Season flag set for "{title}" — seasons: {seasons}', username=username, ip=ip)
-    else:
-        data['season_flags'].pop(req_id, None)
-        write_log('flag', f'Season flags cleared for "{title}"', username=username, ip=ip)
+        if seasons:
+            data['season_flags'][req_id] = seasons
+            write_log('flag', f'Season flag set for "{title}" — seasons: {seasons}', username=username, ip=ip)
+        else:
+            data['season_flags'].pop(req_id, None)
+            write_log('flag', f'Season flags cleared for "{title}"', username=username, ip=ip)
 
-    # Update cache item's season_flags in place
-    for r in data['cache'].get('results', []):
-        if r['req_id'] == req_id:
-            r['season_flags'] = seasons
-            break
+        # Update cache item's season_flags in place
+        for r in data['cache'].get('results', []):
+            if r['req_id'] == req_id:
+                r['season_flags'] = seasons
+                break
 
-    save_data(data)
     return jsonify({'ok': True})
 
 
@@ -1624,12 +1668,14 @@ def delete_seasons(req_id):
                     if del_resp.status_code in (200, 204):
                         steps.append(f'Season {season_num}: {len(file_ids)} file(s) deleted')
                         # Unmonitor the season in Sonarr
-                        req_lib.put(
+                        mon_resp = req_lib.put(
                             f"{sonarr_inst['url'].rstrip('/')}/api/v3/season/monitor",
                             json={'seriesId': sonarr_item_id, 'seasonNumber': season_num, 'monitored': False},
                             headers={'X-Api-Key': sonarr_inst['key']},
                             timeout=10
                         )
+                        if mon_resp.status_code not in (200, 202, 204):
+                            steps.append(f'Season {season_num}: files deleted but unmonitor failed (HTTP {mon_resp.status_code}) — Sonarr may re-download')
                     else:
                         errors.append(f'Season {season_num}: file deletion failed')
                 else:
@@ -1639,12 +1685,12 @@ def delete_seasons(req_id):
 
     # Clear season flags on success
     if not errors:
-        data['season_flags'].pop(req_id, None)
-        for r in data['cache'].get('results', []):
-            if r['req_id'] == req_id:
-                r['season_flags'] = []
-                break
-        save_data(data)
+        with data_transaction() as data:
+            data['season_flags'].pop(req_id, None)
+            for r in data['cache'].get('results', []):
+                if r['req_id'] == req_id:
+                    r['season_flags'] = []
+                    break
 
     summary = f'Season delete for "{title}" seasons {seasons} — {"; ".join(steps)}'
     if errors:
@@ -1660,7 +1706,6 @@ def delete_seasons(req_id):
 @require_admin
 def reassign_requester(req_id):
     """Reassign a cache item to a different Emby user (local only, does not affect Seerr)."""
-    data         = load_data()
     body         = request.json or {}
     username     = request.session['username']
     ip           = get_client_ip()
@@ -1673,29 +1718,36 @@ def reassign_requester(req_id):
     updated = False
     title   = req_id
     old_requester = ''
-    for r in data['cache'].get('results', []):
-        if r['req_id'] == req_id:
-            old_requester          = r.get('requested_by', '')
-            title                  = r.get('title', req_id)
-            r['requested_by']      = new_username
-            r['requester_emby_id'] = new_emby_id or None
-            updated                = True
-            break
+    with data_transaction() as data:
+        for r in data['cache'].get('results', []):
+            if r['req_id'] == req_id:
+                old_requester          = r.get('requested_by', '')
+                title                  = r.get('title', req_id)
+                r['requested_by']      = new_username
+                r['requester_emby_id'] = new_emby_id or None
+                updated                = True
+                break
 
-    if not updated:
-        return jsonify({'error': 'Item not found in cache'}), 404
+        if not updated:
+            return jsonify({'error': 'Item not found in cache'}), 404
 
-    # Persist override so it survives cache rebuilds
-    if 'requester_overrides' not in data:
-        data['requester_overrides'] = {}
-    data['requester_overrides'][req_id] = {
-        'username': new_username,
-        'emby_id':  new_emby_id or None
-    }
+        # Persist override so it survives cache rebuilds
+        if 'requester_overrides' not in data:
+            data['requester_overrides'] = {}
+        data['requester_overrides'][req_id] = {
+            'username': new_username,
+            'emby_id':  new_emby_id or None
+        }
 
-    save_data(data)
     write_log('admin', f'Requester reassigned for "{title}": {old_requester} → {new_username}', username=username, ip=ip)
     return jsonify({'ok': True})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    try:
+        from waitress import serve
+        print('[server] Starting with waitress on 0.0.0.0:5000')
+        serve(app, host='0.0.0.0', port=5000, threads=8)
+    except ImportError:
+        print('[server] waitress not installed — falling back to Flask dev server '
+              '(add "waitress" to requirements.txt for production use)')
+        app.run(host='0.0.0.0', port=5000, debug=False)
