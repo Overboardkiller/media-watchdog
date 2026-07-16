@@ -255,6 +255,7 @@ async function loadReport() {
     renderViewingSelector(data);
     populateUserDropdown();
     applyFilters();
+    updateFlagBadge();
     if (data.building && !data.results.length) {
       renderBuildingState();
       clearTimeout(_buildPollTimer);
