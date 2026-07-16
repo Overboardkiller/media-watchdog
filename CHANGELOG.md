@@ -1,4 +1,12 @@
 # Changelog
+=======
+## [v1.0.3] - 2026-07-16
+### Fixed
+- **Delete confirmation modal not appearing** — `hasKey` was declared inside a scoped IIFE in `doDelete()` and referenced again outside that scope, throwing a silent `ReferenceError` before the modal could render. Clicking Delete did nothing. `hasKey` is now computed once in the outer function scope and reused.
+- **Flag count badge missing after page load/reload** — `updateFlagBadge()` was only wired into flag/keep/delete actions, never called after the initial report load, so the red count next to the Flags filter stayed empty until you flagged something in that session. Now also called from `loadReport()`.
+
+---
+
 ## [v1.0.2] - 2026-07-02
 ### Fixed
 - **Season data not loading** — `/api/seasons/<id>` now uses Emby's `AnyProviderIdEquals` filter to look up the show directly by TMDB/TVDB ID. Previously it fetched only one arbitrary series from the whole library (`Limit: 1`) and matched client-side, which almost always missed — season flags showed no episode counts or Emby data.
@@ -41,4 +49,3 @@ Initial public release.
 - Setup wizard
 - Activity log
 - Docker Hub: `overboardkiller/media-watchdog`
-- Unraid Community Applications support

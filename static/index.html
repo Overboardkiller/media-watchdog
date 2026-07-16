@@ -255,6 +255,7 @@ async function loadReport() {
     renderViewingSelector(data);
     populateUserDropdown();
     applyFilters();
+    updateFlagBadge();
     if (data.building && !data.results.length) {
       renderBuildingState();
       clearTimeout(_buildPollTimer);
@@ -779,6 +780,11 @@ async function doDelete(reqId) {
   const row = allRows.find(r=>r.req_id===reqId);
   if (!row) return;
 
+  const arrType = row.type === 'Movie' ? 'radarr' : 'sonarr';
+  const svc = seerrServices.find(s => s.seerr_service_id === row.service_id) ||
+              seerrServices.find(s => s.type === arrType && s.seerr_service_id.endsWith(':0'));
+  const hasKey = svc && svc.has_arr_key;
+
   // Show confirmation modal with what will happen
   showModal(`
     <h2 class="text-base font-semibold logo-font mb-3 text-red-400">⚠ Confirm Deletion</h2>
@@ -788,15 +794,10 @@ async function doDelete(reqId) {
       ${row.flag_note ? `<p class="text-xs text-zinc-400 mt-2 italic">"${esc(row.flag_note)}"</p>` : ''}
     </div>
     <div class="bg-zinc-900 rounded-xl p-3 mb-4 text-xs text-zinc-400 space-y-1">
-      ${(()=>{
-        const arrType = row.type === 'Movie' ? 'radarr' : 'sonarr';
-        const svc = seerrServices.find(s => s.seerr_service_id === row.service_id) ||
-                    seerrServices.find(s => s.type === arrType && s.seerr_service_id.endsWith(':0'));
-        const hasKey = svc && svc.has_arr_key;
-        return hasKey
-          ? '<p class="text-zinc-400">✓ Remove from Radarr/Sonarr <span class="text-zinc-600">(files deleted from disk)</span></p>'
-          : '<p class="text-amber-400">✗ No Arr API key set — item will remain monitored in Radarr/Sonarr and files will NOT be deleted from disk</p>';
-      })()}
+      ${hasKey
+        ? '<p class="text-zinc-400">✓ Remove from Radarr/Sonarr <span class="text-zinc-600">(files deleted from disk)</span></p>'
+        : '<p class="text-amber-400">✗ No Arr API key set — item will remain monitored in Radarr/Sonarr and files will NOT be deleted from disk</p>'
+      }
       <p class="text-zinc-400">✓ Remove request from Seerr</p>
       ${hasKey
         ? '<p class="text-zinc-400">✓ Emby will clean up on next library scan</p>'
