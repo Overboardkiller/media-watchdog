@@ -1,4 +1,22 @@
 # Changelog
+## [v1.0.3] - 2026-07-16
+### Fixed
+- **Delete confirmation modal not appearing** — `hasKey` was declared inside a scoped IIFE in `doDelete()` and referenced again outside that scope, throwing a silent `ReferenceError` before the modal could render. Clicking Delete did nothing. `hasKey` is now computed once in the outer function scope and reused.
+- **Flag count badge missing after page load/reload** — `updateFlagBadge()` was only wired into flag/keep/delete actions, never called after the initial report load, so the red count next to the Flags filter stayed empty until you flagged something in that session. Now also called from `loadReport()`.
+
+## [v1.0.2] - 2026-07-02
+### Fixed
+- **Season data not loading** — `/api/seasons/<id>` now uses Emby's `AnyProviderIdEquals` filter to look up the show directly by TMDB/TVDB ID. Previously it fetched only one arbitrary series from the whole library (`Limit: 1`) and matched client-side, which almost always missed — season flags showed no episode counts or Emby data.
+- **JSON corruption under concurrent writes, take two** — v1.0.1 introduced atomic writes via temp-file + `os.replace()`, but all workers shared one temp filename (`<file>.tmp`). With multiple gunicorn workers, two processes could still write to that same temp file at once, corrupting it before the rename. Temp filenames are now unique per process/thread (`<file>.<pid>.<tid>.tmp`), closing the race for good.
+- **Lost writes under concurrent access** — all reads/writes to `watchdog.json` now go through a single locked transaction helper, so a flag/protect/config change can no longer be silently overwritten by a cache rebuild finishing at the same moment.
+- **Login rate limiting bypassable via spoofed IP** — `X-Forwarded-For` is now only trusted when `TRUST_PROXY=1` is explicitly set, preventing trivial lockout bypass on deployments not sitting behind a trusted reverse proxy.
+- Minor: unbounded pagination loop, dead code cleanup, deprecated `datetime.utcnow()`, bare `except:` clauses, expired sessions never pruned from `sessions.json`.
+### Changed
+- **Frontend is now fully self-hosted** — Tailwind CSS, Font Awesome, and Google Fonts (Inter, Space Grotesk) are vendored into `static/vendor/` instead of loaded from CDNs. The app now works fully offline and doesn't leak requests to third parties on every page load.
+- Production server now runs via `waitress`/`gunicorn` rather than relying on Flask's development server fallback.
+- Admins can now click the flag badge (🚩 username) directly to unflag an item, instead of only Delete/Keep.
+
+---
 
 ## [v1.0.1] - 2026-07-02
 
@@ -28,4 +46,3 @@ Initial public release.
 - Setup wizard
 - Activity log
 - Docker Hub: `overboardkiller/media-watchdog`
-- Unraid Community Applications support
